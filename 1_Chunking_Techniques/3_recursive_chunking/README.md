@@ -160,3 +160,27 @@ flowchart LR
 - **Cleanest boundaries**: Splits at paragraph → line → word → character, only going finer when forced.
 - **Trade-off**: More computation than `CharacterTextSplitter` (recursive calls per oversized piece), but produces more semantically coherent chunks.
 - Overlap is most effective when the finest separator (`" "` or `""`) is reached, because many small pieces can be selectively popped from the front.
+
+---
+
+## Pros, Cons & When to Use
+
+| | |
+|---|---|
+| ✅ **Respects natural boundaries** | Splits at paragraphs → lines → words → characters, in that order. Mid-word cuts are a last resort. |
+| ✅ **Overlap works reliably** | Word-level splits give the overlap mechanism many small pieces to retain, producing consistent context carry-over. |
+| ✅ **No external model needed** | Pure string operations — fast and dependency-free. |
+| ✅ **Good default choice** | The LangChain default for a reason: works well on most natural language text out of the box. |
+| ❌ **Still size-driven** | Chunk boundaries are ultimately determined by `chunk_size`, not by meaning. A topic can still be split across two chunks. |
+| ❌ **More compute than character splitter** | Recursive calls for each oversized piece add overhead, though it's negligible for typical document sizes. |
+| ❌ **Separator list is fixed** | The default separators work for English prose. Code, markdown, or other structured formats need a custom separator list. |
+
+**Suitable for:**
+- General-purpose RAG pipelines on natural language documents (articles, books, documentation).
+- The go-to starting point before considering more expensive techniques.
+- Code splitting with a custom separator list (LangChain provides language-specific presets).
+- Any use case where you want better quality than character chunking without the cost of embedding-based methods.
+
+**Not suitable for:**
+- Documents where topic coherence is critical and topics don't align with paragraph/line boundaries.
+- Highly structured formats (tables, JSON, XML) where the default separators are meaningless.

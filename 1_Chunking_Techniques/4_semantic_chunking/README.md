@@ -170,3 +170,29 @@ Chunk 2 [45 chars]: Photosynthesis converts sunlight into energy.
 - **Embedding cost**: Requires one model inference per sentence — the most computationally expensive approach.
 - **Threshold direction matters**: For `percentile`, a *lower* `breakpoint_threshold_amount` means a *lower* threshold, which means *more* splits. This is the opposite of what the name "amount" might suggest.
 - **Best for**: Documents with clear topical shifts — scientific papers, legal documents, FAQs. Less useful for homogeneous text where semantic boundaries are subtle.
+
+---
+
+## Pros, Cons & When to Use
+
+| | |
+|---|---|
+| ✅ **Meaning-aware boundaries** | Splits only where topics actually change, not at arbitrary size limits. |
+| ✅ **Variable chunk sizes** | Chunks are as long as they need to be — a short topic gets a short chunk, a long topic gets a long one. |
+| ✅ **No overlap needed** | Each chunk is semantically self-contained, so context carry-over is unnecessary. |
+| ✅ **Best retrieval quality** | Queries retrieve complete topical units rather than fragments, improving answer accuracy. |
+| ❌ **Expensive** | Requires one embedding inference per sentence. For a 100-page document this can be thousands of model calls. |
+| ❌ **Threshold sensitivity** | `breakpoint_threshold_amount` must be tuned per document type. Wrong values produce either too many tiny chunks or too few large ones. |
+| ❌ **No hard size guarantee** | A single long topic produces one very large chunk that may exceed an LLM's context window. |
+| ❌ **Embedding model dependency** | Quality depends on the embedding model. A weak model produces poor similarity scores and bad split points. |
+
+**Suitable for:**
+- Documents with clear, distinct topics: scientific papers, legal contracts, technical reports, FAQs.
+- High-stakes RAG systems where retrieval precision directly affects answer quality.
+- Offline or batch indexing pipelines where inference cost is acceptable.
+- Use cases where chunk size uniformity is less important than semantic completeness.
+
+**Not suitable for:**
+- Real-time or low-latency chunking pipelines.
+- Homogeneous text (e.g., a single continuous narrative) where there are no meaningful topic shifts to detect.
+- Resource-constrained environments without GPU or fast embedding inference.

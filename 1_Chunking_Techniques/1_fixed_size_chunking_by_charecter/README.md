@@ -167,3 +167,26 @@ flowchart LR
 - **Line cutting** (`separator="\n"`) preserves whole lines but overlap often has no effect: a single 167-char line is one atomic piece — you can't partially carry it forward.
 - The `chunk_overlap` mechanism only produces visible overlap when a chunk is built from **multiple small pieces**. A single large atomic piece cannot be partially carried over.
 - The default separator is `"\n\n"` (double newline / paragraph break), not `""`.
+
+---
+
+## Pros, Cons & When to Use
+
+| | |
+|---|---|
+| ✅ **Extremely fast** | No tokenization or model inference — pure string slicing. |
+| ✅ **Zero dependencies** | Works on any text without external libraries. |
+| ✅ **Predictable output size** | Every chunk is at most `chunk_size` characters, making storage and batching simple. |
+| ❌ **Meaning-blind** | Cuts mid-word, mid-sentence, or mid-idea with `separator=""`. |
+| ❌ **Overlap is fragile** | Overlap only works when the separator produces many small pieces. A single long line carries no overlap. |
+| ❌ **Poor retrieval quality** | Fragmented tokens at boundaries confuse embedding models and degrade similarity search. |
+
+**Suitable for:**
+- Quick prototypes where retrieval quality is not yet a concern.
+- Pre-processing pipelines where text will be further cleaned or re-chunked downstream.
+- Homogeneous, highly structured text (e.g., fixed-width log files, CSV rows) where character boundaries are meaningful.
+- Situations where speed and simplicity outweigh semantic coherence.
+
+**Not suitable for:**
+- Production RAG systems where retrieval precision matters.
+- Natural language documents (articles, books, reports) where ideas span multiple sentences.

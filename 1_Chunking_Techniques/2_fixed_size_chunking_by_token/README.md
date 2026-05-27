@@ -161,3 +161,25 @@ chunk_size=100, chunk_overlap=0:
 - With `chunk_overlap=0`, windows are strictly adjacent. With `chunk_overlap > 0`, the window advances by `chunk_size - overlap` tokens, so the overlapping tokens appear in both the current and next chunk.
 - `chunk_size=100` tokens is small. Typical RAG pipelines use 256–512 tokens per chunk for dense retrieval.
 - **Alternatives** for tokenization: spaCy (linguistic boundaries), SentenceTransformers (semantic), NLTK (general NLP), KoNLPy (Korean). Each produces different token boundaries and affects chunk quality.
+
+---
+
+## Pros, Cons & When to Use
+
+| | |
+|---|---|
+| ✅ **LLM-accurate sizing** | Token count directly maps to an LLM's context window — no silent truncation. |
+| ✅ **Consistent token budget** | Every chunk is guaranteed to fit within `chunk_size` tokens regardless of character length. |
+| ✅ **Encoding-aware** | Uses the same tokenizer as the target LLM (e.g., `cl100k_base` for GPT-4), so sizing is exact. |
+| ❌ **Meaning-blind** | Like character chunking, it still cuts at arbitrary token positions — mid-sentence splits are common. |
+| ❌ **Tokenizer dependency** | Requires `tiktoken` and the correct encoding name; switching LLMs may require re-chunking. |
+| ❌ **Character length unpredictable** | Chunks vary in character length, which can complicate display or downstream character-based processing. |
+
+**Suitable for:**
+- Any pipeline that feeds chunks directly into an LLM with a strict token limit (GPT-4, Claude, etc.).
+- Embedding-based retrieval where you need to guarantee chunks fit within the embedding model's max sequence length.
+- Systems where you know the target model's tokenizer and want precise context window utilisation.
+
+**Not suitable for:**
+- Use cases where sentence or paragraph integrity matters (use recursive or semantic chunking instead).
+- Multi-model pipelines where different models use different tokenizers — chunks sized for one model may be wrong for another.
