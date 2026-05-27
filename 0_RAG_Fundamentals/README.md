@@ -35,8 +35,6 @@ This module builds the foundation before the specialised techniques in later mod
 | 1 | [Simple RAG](1_simple_rag/README.md) | The basic pipeline end-to-end |
 | 2 | [Reliable RAG](2_reliable_rag/README.md) | Validation and trust checks |
 
-> RAG over CSV and RAG over JSON have moved to [`1_Chunking_Techniques/5_structured_document_chunking/`](../1_Chunking_Techniques/5_structured_document_chunking/README.md) — they are fundamentally about how structured data formats are chunked and indexed.
-
 ---
 
 ## The Four Decisions in Every RAG System
