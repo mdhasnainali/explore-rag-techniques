@@ -7,14 +7,14 @@ large amounts of natural language data.
 """
 
 splitter = CharacterTextSplitter(
-    chunk_size=100,        # characters per chunk
-    chunk_overlap=15,      # 15 characters overlap
-    separator=""           # Default is "/n/n"
+    chunk_size=100,  # characters per chunk
+    chunk_overlap=15,  # 15 characters overlap
+    separator="",  # Default is "/n/n"
 )
 
 chunks = splitter.split_text(text)
 for i, chunk in enumerate(chunks):
-    print(f"Chunk {i+1} [{len(chunk)} chars]: {chunk}")
+    print(f"Chunk {i + 1} [{len(chunk)} chars]: {chunk}")
 
 
 # Output:

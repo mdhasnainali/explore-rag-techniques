@@ -1,5 +1,4 @@
-import tiktoken
-from langchain_text_splitters import CharacterTextSplitter
+from transformers import AutoTokenizer
 
 text = """
 Natural language processing (NLP) is a subfield of linguistics, computer science, and artificial intelligence. It is concerned with the interactions between computers 
@@ -7,32 +6,31 @@ and human language, in particular how to program computers to process and analyz
 large amounts of natural language data.
 """
 
-splitter = CharacterTextSplitter.from_tiktoken_encoder(
-    encoding_name="cl100k_base",
-    chunk_size=100,
-    chunk_overlap=0,
-     separator=""
-)
+CHUNK_SIZE = 30    # tokens per chunk
+CHUNK_OVERLAP = 5  # tokens of overlap between chunks
 
-chunks = splitter.split_text(text)
-for i, chunk in enumerate(chunks):
-    print(f"Chunk {i+1} [{len(chunk)} chars]: {chunk}")
 
-# Count tokens in each chunk to verify
-encoding = tiktoken.get_encoding("cl100k_base")
+def sliding_window(token_ids, chunk_size, overlap):
+    """Yield (start, end) slices of token_ids using a sliding window."""
+    start = 0
+    while start < len(token_ids):
+        end = min(start + chunk_size, len(token_ids))
+        yield start, end
+        if end == len(token_ids):
+            break
+        start += chunk_size - overlap
 
-for i, chunk in enumerate(chunks):
-    chunk_token_count = len(encoding.encode(chunk))
-    print(f"Chunk {i+1} token count: {chunk_token_count}")
+tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+token_ids = tokenizer.encode(text, add_special_tokens=False)
+print(f"Total tokens: {len(token_ids)}\n")
+
+for i, (s, e) in enumerate(sliding_window(token_ids, CHUNK_SIZE, CHUNK_OVERLAP)):
+    chunk_text = tokenizer.decode(token_ids[s:e], skip_special_tokens=True)
+    print(f"Chunk {i + 1} [tokens {s}–{e - 1}, {e - s} tokens]: {chunk_text!r}")
+
 
 # Output:
-# Chunk 1 [99 chars]: Natural language processing (NLP) is a subfield of linguistics, computer science, and artificial in
-# Chunk 2 [100 chars]: telligence. It is concerned with the interactions between computers and human language, in particul
-# Chunk 3 [91 chars]: ar how to program computers to process and analyze large amounts of natural language data.
-# Chunk 1 token count: 21
-# Chunk 2 token count: 18
-# Chunk 3 token count: 17
+# Total tokens: 50
 
-
-# Findings:
-# There are multiple alternatives of this langchain_text_splitters: spaCy, SenetenceTransformers, NLTK, KoNLPY
+# Chunk 1 [tokens 0–29, 30 tokens]: 'natural language processing ( nlp ) is a subfield of linguistics, computer science, and artificial intelligence. it is concerned with the interactions between computers and'
+# Chunk 2 [tokens 25–49, 25 tokens]: 'the interactions between computers and human language, in particular how to program computers to process and analyze large amounts of natural language data.'

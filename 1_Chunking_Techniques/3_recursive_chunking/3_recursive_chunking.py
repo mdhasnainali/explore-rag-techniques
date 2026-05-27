@@ -6,13 +6,11 @@ and human language, in particular how to program computers to process and analyz
 large amounts of natural language data.
 """
 
-splitter = RecursiveCharacterTextSplitter(
-    chunk_size=100, chunk_overlap=15
-)
+splitter = RecursiveCharacterTextSplitter(chunk_size=100, chunk_overlap=15)
 
 chunks = splitter.split_text(text)
 for i, chunk in enumerate(chunks):
-    print(f"Chunk {i+1} [{len(chunk)} chars]: {chunk}")
+    print(f"Chunk {i + 1} [{len(chunk)} chars]: {chunk}")
 
 # Output:
 # Chunk 1 [96 chars]: Natural language processing (NLP) is a subfield of linguistics, computer science, and artificial
