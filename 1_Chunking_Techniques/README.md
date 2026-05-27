@@ -15,6 +15,8 @@ This folder covers seven chunking techniques implemented in this repository, plu
 | 5 | Structured (Markdown / HTML / JSON / Code) | Parse document format | Headings, keys, tags, functions |
 | 6 | Proposition / Agentic | LLM decomposes into atomic facts | Meaning |
 | 7 | Parent-Child (Hierarchical) | Search small, return large | Two-level size hierarchy |
+| 8 | Chunk Size Selection | Evaluate candidate chunk sizes | Retrieval and answer quality |
+| 9 | Contextual Chunk Headers | Prepend heading breadcrumbs | Document structure |
 
 ---
 

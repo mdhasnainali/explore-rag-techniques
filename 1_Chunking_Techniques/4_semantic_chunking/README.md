@@ -15,6 +15,8 @@ Think of it like reading a book and noticing when the author switches subjects. 
 
 ---
 
+![Semantic vs Regular Chunking](../../assets/reference_images/semantic_chunking_comparison.svg)
+
 ## Algorithm
 
 Uses `langchain_experimental.text_splitter.SemanticChunker` with a sentence embedding model.

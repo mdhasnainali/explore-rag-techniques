@@ -29,7 +29,7 @@ This technique is based on the paper **["Dense X Retrieval: What Retrieval Granu
 
 ## Pipeline Overview
 
-![Proposition Chunking Pipeline](./proposition_chunking.svg)
+![Proposition Chunking Pipeline](../../assets/reference_images/proposition_chunking.svg)
 
 The full pipeline has five stages:
 
