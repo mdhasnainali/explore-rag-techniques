@@ -2,100 +2,103 @@
 
 ## The Simple Idea (Feynman Explanation)
 
-LLMs don't read characters — they read **tokens**. A token is roughly a word-piece: `"natural"` is 1 token, `"processing"` is 1 token, `"(NLP)"` is 3 tokens. When you chunk by character count, you might give an LLM 100 characters that are actually 25 tokens, or 100 characters that are 40 tokens. The LLM's context window is measured in tokens, not characters.
+LLMs don't read characters — they read **tokens**. A token is roughly a word-piece: `"natural"` is 1 token, `"processing"` is 1 token, `"( nlp )"` is 5 tokens. When you chunk by character count, you might give a model 100 characters that are 25 tokens, or 100 characters that are 40 tokens. The model's context window is measured in tokens, not characters.
 
-Token-based chunking fixes this: you encode the whole text into token IDs first, then slice the ID array into windows of exactly `chunk_size` tokens. Each window is decoded back to text. The character length of each chunk will vary, but the token count is always ≤ `chunk_size`.
+Token-based chunking fixes this: encode the whole text into token IDs, slice the ID array into windows of exactly `chunk_size` tokens, then decode each window back to text. The character length of each chunk varies, but the token count is always ≤ `chunk_size`.
 
-Think of it like cutting a film reel by frame count instead of by centimetres. Each frame is a different width on screen, but you always get exactly N frames per segment.
+Think of it like cutting a film reel by **frame count** instead of by centimetres. Each frame is a different width on screen, but you always get exactly N frames per segment.
+
+---
+
+## Tokenizer Used
+
+This implementation uses **HuggingFace `transformers`** with `bert-base-uncased` (WordPiece tokenizer).
+
+| Property | Value |
+|---|---|
+| Model | `bert-base-uncased` |
+| Vocabulary type | WordPiece |
+| Case | Lowercases all text |
+| Used by | BERT, RoBERTa, DistilBERT, MiniLM |
+
+> **Why WordPiece lowercases:** `bert-base-uncased` was trained on lowercased text, so its tokenizer normalises input to lowercase. `bert-base-cased` preserves case if needed.
 
 ---
 
 ## Algorithm
 
-Uses `CharacterTextSplitter.from_tiktoken_encoder()`. The core logic is in `split_text_on_tokens()` in `base.py`.
-
 ### Step 1 — Encode text to token IDs
 
 ```python
-input_ids = tokenizer.encode(text)
-# "Hello world" → [15339, 1917]
-# Each integer is one token in the cl100k_base vocabulary
+tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+token_ids = tokenizer.encode(text, add_special_tokens=False)
+# "Hello World" → [7592, 2088]
+# add_special_tokens=False omits [CLS] and [SEP] boundary tokens
 ```
 
 ### Step 2 — Slide a window of `chunk_size` tokens
 
+```python
+def sliding_window(token_ids, chunk_size, overlap):
+    start = 0
+    while start < len(token_ids):
+        end = min(start + chunk_size, len(token_ids))
+        yield start, end
+        if end == len(token_ids):
+            break
+        start += chunk_size - overlap  # advance, keeping `overlap` tokens shared
 ```
-start_idx = 0
-while start_idx < len(input_ids):
-    cur_idx = min(start_idx + chunk_size, len(input_ids))
-    chunk_ids = input_ids[start_idx : cur_idx]
-    decoded = tokenizer.decode(chunk_ids)
-    splits.append(decoded)
-    if cur_idx == len(input_ids):
-        break                              # reached the end
-    start_idx += chunk_size - chunk_overlap  # advance window
-```
+
+Each iteration yields a `(start, end)` index pair. The window advances by `chunk_size - overlap` each step, so the last `overlap` tokens of one chunk become the first `overlap` tokens of the next.
 
 ### Step 3 — Decode each window back to text
 
-Each slice of token IDs is decoded into a human-readable string. Because tokens represent variable amounts of text, the character length of each chunk differs even though the token count is the same.
+```python
+chunk_text = tokenizer.decode(token_ids[s:e], skip_special_tokens=True)
+```
 
 ---
 
 ## Worked Example
 
-**Code:**
-```python
-splitter = CharacterTextSplitter.from_tiktoken_encoder(
-    encoding_name="cl100k_base",
-    chunk_size=100,
-    chunk_overlap=0,
-    separator=""
-)
-```
+**Settings:** `CHUNK_SIZE = 30`, `CHUNK_OVERLAP = 5`
 
-**Input text** (the NLP paragraph):
-```
-\nNatural language processing (NLP) is a subfield of linguistics, computer science, and artificial
-intelligence. It is concerned with the interactions between computers\nand human language, in
-particular how to program computers to process and analyze\nlarge amounts of natural language data.\n
-```
-
-**Trace** (`chunk_size=100`, `chunk_overlap=0`):
+**Input text** (NLP paragraph, 50 tokens after encoding):
 
 ```
-Step 1 — Encode:
-  input_ids = tokenizer.encode(text)
-  Total tokens: 56
+Natural language processing (NLP) is a subfield of linguistics, computer science,
+and artificial intelligence. It is concerned with the interactions between computers
+and human language, in particular how to program computers to process and analyze
+large amounts of natural language data.
+```
 
-Step 2 — Window 1:
-  start_idx = 0
-  cur_idx   = min(0 + 100, 56) = 56
-  chunk_ids = input_ids[0:56]   → all 56 tokens
-  decoded   → full text (split into 3 char-level chunks by CharacterTextSplitter)
+**Trace:**
 
-  Wait — from_tiktoken_encoder wraps split_text_on_tokens inside CharacterTextSplitter.
-  The token splitter produces 1 token-window (56 tokens < 100), then CharacterTextSplitter
-  splits that decoded text by separator="" at the character level with chunk_size=100 chars.
+```
+Encode → 50 token IDs
 
-  Character-level split of the 290-char decoded text at chunk_size=100:
-    Chunk 1: chars  0–98  → 99 chars  → 21 tokens
-    Chunk 2: chars 99–198 → 100 chars → 18 tokens
-    Chunk 3: chars 199–289 → 91 chars → 17 tokens
+Window 1:  start=0,  end=min(0+30, 50)=30  → tokens [0..29]  → 30 tokens
+Window 2:  start=0+(30-5)=25, end=min(25+30,50)=50 → tokens [25..49] → 25 tokens
+           end==len(token_ids) → stop
 ```
 
 **Output:**
-```
-Chunk 1 [99 chars]:  Natural language processing (NLP) is a subfield of linguistics, computer science, and artificial in
-Chunk 2 [100 chars]: telligence. It is concerned with the interactions between computers and human language, in particul
-Chunk 3 [91 chars]:  ar how to program computers to process and analyze large amounts of natural language data.
 
-Chunk 1 token count: 21
-Chunk 2 token count: 18
-Chunk 3 token count: 17
+```
+Total tokens: 50
+
+Chunk 1 [tokens 0–29, 30 tokens]:
+  'natural language processing ( nlp ) is a subfield of linguistics,
+   computer science, and artificial intelligence. it is concerned with
+   the interactions between computers and'
+
+Chunk 2 [tokens 25–49, 25 tokens]:
+  'the interactions between computers and human language, in particular
+   how to program computers to process and analyze large amounts of
+   natural language data.'
 ```
 
-The character counts differ (99, 100, 91) because different subword tokens represent different amounts of text. The token counts are all well under 100 — the token budget is respected.
+Tokens 25–29 (`the interactions between computers and`) appear in **both** chunks — that's the 5-token overlap.
 
 ---
 
@@ -103,16 +106,16 @@ The character counts differ (99, 100, 91) because different subword tokens repre
 
 ```mermaid
 flowchart TD
-    A[Input Text] --> B[tiktoken.encode\n→ list of token IDs]
-    B --> C[start_idx = 0]
-    C --> D{start_idx < len tokens?}
-    D -- No --> E[Return chunks]
-    D -- Yes --> F["cur_idx = min(start_idx + chunk_size, len tokens)"]
-    F --> G["token_slice = input_ids[start_idx : cur_idx]"]
-    G --> H[tokenizer.decode\n→ text chunk]
-    H --> I{cur_idx == len tokens?}
+    A[Input Text] --> B["AutoTokenizer.encode(text)\n→ list of token IDs\n50 tokens"]
+    B --> C[start = 0]
+    C --> D{"start < len(token_ids)?"}
+    D -- No --> E[Return all chunks]
+    D -- Yes --> F["end = min(start + chunk_size, len)"]
+    F --> G["slice = token_ids[start : end]"]
+    G --> H["tokenizer.decode(slice)\n→ text chunk"]
+    H --> I{"end == len(token_ids)?"}
     I -- Yes --> E
-    I -- No --> J[start_idx += chunk_size - chunk_overlap]
+    I -- No --> J["start += chunk_size - overlap\n(advance by 25)"]
     J --> D
 ```
 
@@ -120,47 +123,37 @@ flowchart TD
 
 ## Sliding Window Visualization
 
-With `chunk_size=10` tokens and `chunk_overlap=3` (illustrative):
+`chunk_size=30`, `chunk_overlap=5` on 50 tokens:
 
 ```mermaid
-block-beta
-    columns 20
-    block:seq["Token sequence"]:20
-        t0["T0"] t1["T1"] t2["T2"] t3["T3"] t4["T4"] t5["T5"] t6["T6"] t7["T7"] t8["T8"] t9["T9"] t10["T10"] t11["T11"] t12["T12"] t13["T13"] t14["T14"] t15["T15"] t16["T16"] t17["T17"] t18["T18"] t19["T19"]
+flowchart LR
+    subgraph tokens["50 token IDs"]
+        direction LR
+        A["T0 ... T24"] --- B["T25 ... T29"] --- C["T30 ... T49"]
     end
-    block:c1["Chunk 1 — T0..T9"]:10
-        space:10
-    end
-    space:7
-    block:c2["Chunk 2 — T7..T16"]:10
-        space:10
-    end
-    space:3
-    block:c3["Chunk 3 — T14..T19"]:6
-        space:6
-    end
-```
 
-With `chunk_overlap=0` (as in the actual code), windows are strictly adjacent — no shared tokens between chunks.
+    subgraph chunk1["Chunk 1 — tokens 0–29"]
+        direction LR
+        C1A["T0 ... T24"] --- C1B["T25...T29"]
+    end
 
-```
-chunk_size=100, chunk_overlap=0:
+    subgraph chunk2["Chunk 2 — tokens 25–49"]
+        direction LR
+        C2A["T25...T29\n(overlap)"] --- C2B["T30 ... T49"]
+    end
 
-  Window 1: tokens [0 .. 99]    → Chunk 1
-  Window 2: tokens [100 .. 199] → Chunk 2
-  Window 3: tokens [200 .. 299] → Chunk 3
-  (no overlap — each token appears in exactly one chunk)
+    B -. "5-token overlap" .-> C2A
 ```
 
 ---
 
 ## Key Findings
 
-- **Character count varies** (99, 100, 91) even though the token budget is uniform. Subword tokens encode different amounts of text, so character lengths are inconsistent.
-- **Token-aware chunking** guarantees each chunk fits within an LLM's context window — something character-based chunking cannot guarantee.
-- With `chunk_overlap=0`, windows are strictly adjacent. With `chunk_overlap > 0`, the window advances by `chunk_size - overlap` tokens, so the overlapping tokens appear in both the current and next chunk.
-- `chunk_size=100` tokens is small. Typical RAG pipelines use 256–512 tokens per chunk for dense retrieval.
-- **Alternatives** for tokenization: spaCy (linguistic boundaries), SentenceTransformers (semantic), NLTK (general NLP), KoNLPy (Korean). Each produces different token boundaries and affects chunk quality.
+- **True token chunking**: the window slices the token ID array directly — every chunk contains exactly `chunk_size` tokens (except the last window which may be shorter).
+- **WordPiece lowercases**: `bert-base-uncased` normalises `(NLP)` → `( nlp )`. Use `bert-base-cased` if case matters.
+- **`add_special_tokens=False`**: omits `[CLS]` and `[SEP]` tokens. Including them would waste 2 tokens per chunk on boundary markers that carry no content.
+- **Overlap works at the token level**: the 5-token overlap is exact — not approximate like character-based overlap.
+- Typical RAG pipelines use 256–512 tokens per chunk. `CHUNK_SIZE=30` is intentionally small here to show the overlap clearly.
 
 ---
 
@@ -168,18 +161,17 @@ chunk_size=100, chunk_overlap=0:
 
 | | |
 |---|---|
-| ✅ **LLM-accurate sizing** | Token count directly maps to an LLM's context window — no silent truncation. |
-| ✅ **Consistent token budget** | Every chunk is guaranteed to fit within `chunk_size` tokens regardless of character length. |
-| ✅ **Encoding-aware** | Uses the same tokenizer as the target LLM (e.g., `cl100k_base` for GPT-4), so sizing is exact. |
-| ❌ **Meaning-blind** | Like character chunking, it still cuts at arbitrary token positions — mid-sentence splits are common. |
-| ❌ **Tokenizer dependency** | Requires `tiktoken` and the correct encoding name; switching LLMs may require re-chunking. |
-| ❌ **Character length unpredictable** | Chunks vary in character length, which can complicate display or downstream character-based processing. |
+| ✅ **True token-level sizing** | Window slices the token array directly — token count is exact, not estimated. |
+| ✅ **Model-matched tokenizer** | Using the same tokenizer as your embedding/inference model guarantees chunks fit within its sequence limit. |
+| ✅ **Exact overlap** | Overlap is measured in tokens, not characters — consistent across all chunks. |
+| ❌ **Meaning-blind** | Cuts at arbitrary token positions — mid-sentence splits are common. |
+| ❌ **Lowercases text** | `bert-base-uncased` loses case information. Use `bert-base-cased` if that matters. |
+| ❌ **Character length unpredictable** | Chunks vary in character length even though token count is fixed. |
 
 **Suitable for:**
-- Any pipeline that feeds chunks directly into an LLM with a strict token limit (GPT-4, Claude, etc.).
-- Embedding-based retrieval where you need to guarantee chunks fit within the embedding model's max sequence length.
-- Systems where you know the target model's tokenizer and want precise context window utilisation.
+- Embedding pipelines using BERT-family models where chunks must fit within the model's 512-token limit.
+- Any pipeline where you want chunk sizes matched exactly to the tokenizer of your target model.
 
 **Not suitable for:**
-- Use cases where sentence or paragraph integrity matters (use recursive or semantic chunking instead).
-- Multi-model pipelines where different models use different tokenizers — chunks sized for one model may be wrong for another.
+- Pipelines targeting OpenAI models — use `tiktoken` with `cl100k_base` instead.
+- Use cases where sentence or paragraph integrity matters — use recursive or semantic chunking instead.
