@@ -18,8 +18,8 @@ Every folder and file is prefixed with a number. Numbers define the learning ord
 
 ```
 1_Chunking_Techniques/
-  1_fixed_size_chunking_by_charecter/
-    1_fixed_size_chunking_by_charecter.py
+  1_fixed_size_chunking_by_character/
+    1_fixed_size_chunking_by_character.py
   2_fixed_size_chunking_by_token/
     1_fixed_size_chunking_by_token.py
   ...
