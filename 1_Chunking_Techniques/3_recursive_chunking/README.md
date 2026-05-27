@@ -1,128 +1,106 @@
 # Recursive Chunking
 
+## The Simple Idea (Feynman Explanation)
+
+Imagine you're packing books into boxes. Your rule: each box holds at most 100 pages.
+
+1. First, try to keep whole **chapters** together. If a chapter fits in one box, great.
+2. If a chapter is too long, break it into **paragraphs** and try again.
+3. If a paragraph is still too long, break it into **sentences**.
+4. If a sentence is still too long, break it into **words**.
+5. Last resort: break at any **character**.
+
+That's recursive chunking. It tries the coarsest split first and only goes finer when a piece is still too big. The result: chunks that respect natural language boundaries as much as possible.
+
+---
+
 ## Algorithm
 
-Uses `langchain_text_splitters.RecursiveCharacterTextSplitter` to split text by trying multiple separators **hierarchically**, from coarsest to finest. Defined in `_split_text()` in `character.py`.
+Uses `langchain_text_splitters.RecursiveCharacterTextSplitter`. The core logic is in `_split_text()` in `character.py`.
 
-### Step-by-Step Logic
+### Step 1 — Select the best separator
 
-**Step 1 — Select the best separator**
-
-Given an ordered list of separators (default: `["\n\n", "\n", " ", ""]`), scan from left to right to find the first separator that exists in the current text segment. This becomes the primary splitter for this level. The remaining separators become `new_separators` for recursive descent.
+Given the ordered separator list (default: `["\n\n", "\n", " ", ""]`), find the first separator that actually exists in the current text. That becomes the active separator; the rest become `new_separators` for recursive calls.
 
 ```
 separators = ["\n\n", "\n", " ", ""]
 text = "Line 1\nLine 2\n\nParagraph 2\nLine 4"
 
-Check "\n\n" → found at "Paragraph 2"
-→ separator = "\n\n", new_separators = ["\n", " ", ""]
+Check "\n\n" → found!
+→ active separator = "\n\n"
+→ new_separators   = ["\n", " ", ""]
 ```
 
-**Step 2 — Split using the selected separator**
-
-Divide the text using the selected separator via regex. Each resulting piece is checked against `chunk_size`.
+### Step 2 — Split using the selected separator
 
 ```
 splits = text.split("\n\n")
 → ["Line 1\nLine 2", "Paragraph 2\nLine 4"]
 ```
 
-**Step 3 — Process each split recursively**
+### Step 3 — Process each piece
 
-For each split piece:
-- If `len(piece) < chunk_size`: Add to `good_splits` accumulator (these will be merged later).
-- If `len(piece) >= chunk_size`: 
-  - First merge and save any accumulated `good_splits` into chunks.
-  - Then, if there are `new_separators` remaining, **recursively** call `_split_text(piece, new_separators)`.
-  - If no separators remain (already at `""`), save the piece as-is.
+For each piece:
+- **Fits** (`len(piece) < chunk_size`): add to `good_splits` accumulator.
+- **Too big** (`len(piece) >= chunk_size`):
+  1. Flush `good_splits` into chunks via `_merge_splits`.
+  2. If `new_separators` remain → **recurse** with `_split_text(piece, new_separators)`.
+  3. If no separators remain → save piece as-is.
 
-```
-piece "Line 1\nLine 2" (14 chars) < 100 → good_splits = ["Line 1\nLine 2"]
-piece "Paragraph 2\nLine 4" (21 chars) < 100 → good_splits = ["Line 1\nLine 2", "Paragraph 2\nLine 4"]
+### Step 4 — Merge accumulated `good_splits`
 
-Now merge good_splits into chunks of ~100 chars using _merge_splits
-```
+Uses the same `_merge_splits` logic as `CharacterTextSplitter`: accumulate pieces up to `chunk_size`, then finalize and apply overlap by popping from the front.
 
-**Step 4 — Merge accumulated splits**
+---
 
-When recursion returns or the loop ends, the accumulated `good_splits` are merged using the same `_merge_splits` logic from `CharacterTextSplitter` — accumulating pieces, finalizing at `chunk_size` boundaries, and applying overlap by popping front elements.
+## Worked Example
 
-### Full Trace with Example
-
-```
-Text:  "\nNatural language processing...\nand human language...\nlarge amounts..."
-       chunk_size=100, chunk_overlap=15
-
-1. Separator "\n\n" not found in text (no paragraph breaks).
-2. Separator "\n" found. new_separators = [" ", ""]
-3. Split by "\n": 3 pieces → ["Natural... (167 chars)", "and human... (81 chars)", "large amounts... (39 chars)"]
-
-4. Process piece 1 (167 chars >= 100):
-   → Recursively split with separators [" ", ""]
-   → Separator " " found → split into words (~20 words)
-   → Each word < 100 → accumulate in good_splits
-   → Merge good_splits into chunks of ~100 chars:
-     → Chunk A: words[0..N] totaling 96 chars → "Natural language processing (NLP) is a subfield of linguistics, computer science, and artificial"
-     → Overlap: pop front words until total ≤ 15
-       Remaining: last ~1-2 words ("and artificial", 15 chars)
-     → Chunk B: overlap tail + remaining words
-       → "and artificial intelligence. It is concerned with the interactions between computers"
-       → 84 chars
-
-5. Process piece 2 (81 chars < 100):
-   → Accumulate in good_splits
-
-6. Process piece 3 (39 chars < 100):
-   → Accumulate in good_splits
-
-7. Merge good_splits [piece2, piece3]:
-   → 81 + 1 + 39 = 121 > 100
-   → Chunk C: piece2 (81 chars) → "and human language, in particular how to program computers to process and analyze"
-   → Overlap: pop front words → no room for 15 chars overlap from 81-char single piece
-   → Chunk D: piece3 (39 chars) → "large amounts of natural language data."
+**Code:**
+```python
+splitter = RecursiveCharacterTextSplitter(
+    chunk_size=100,
+    chunk_overlap=15
+)
 ```
 
-### Mermaid Diagram
+**Full trace:**
 
-```mermaid
-flowchart TD
-    A[Input Text] --> B[Select first separator\nthat exists in text]
-    B --> C[Split text by separator]
-    C --> D{For each split piece}
-    D --> E{len(piece) < chunk_size?}
-    E -- Yes --> F[Add to good_splits]
-    E -- No --> G[Save good_splits as chunks\nvia _merge_splits]
-    G --> H{new_separators remain?}
-    H -- Yes --> I[Recurse with\npiece + new_separators]
-    H -- No --> J[Save piece as-is]
-    I --> K[Return sub-chunks]
-    J --> K
-    F --> D
-    K --> D
-    D --> L[End of splits?]
-    L -- No --> D
-    L -- Yes --> M[Save remaining\ngood_splits as chunks]
-    M --> N[Return all chunks]
+```
+Text: "\nNatural language processing (NLP) is a subfield of linguistics, computer science,
+       and artificial intelligence. It is concerned with the interactions between computers
+       \nand human language, in particular how to program computers to process and analyze
+       \nlarge amounts of natural language data.\n"
+
+chunk_size=100, chunk_overlap=15
+
+1. Try "\n\n" → not found in text.
+2. Try "\n"   → found. new_separators = [" ", ""]
+3. Split by "\n" → 4 pieces (leading \n produces an empty string, which is dropped):
+     piece A: "Natural language processing ... and artificial intelligence." (167 chars)
+     piece B: "and human language, in particular how to program computers to process and analyze" (81 chars)
+     piece C: "large amounts of natural language data." (39 chars)
+
+4. piece A (167 chars ≥ 100) → recurse with new_separators=[" ", ""]
+     Try " " → found. Split into ~20 words, each word < 100.
+     Merge words into chunks of ≤ 100 chars:
+       Chunk 1: "Natural language processing (NLP) is a subfield of linguistics, computer science, and artificial"
+                → 96 chars
+       Overlap: pop front words until total ≤ 15
+                → last word retained: "artificial" (10 chars) — but LangChain retains
+                  "and artificial" (14 chars) as the overlap tail
+       Chunk 2: "and artificial intelligence. It is concerned with the interactions between computers"
+                → 84 chars (starts with the 14-char overlap tail)
+
+5. piece B (81 chars < 100) → good_splits = [piece B]
+6. piece C (39 chars < 100) → good_splits = [piece B, piece C]
+
+7. Merge good_splits:
+     81 + 1(sep) + 39 = 121 > 100
+     → Chunk 3: piece B alone → 81 chars
+     → Chunk 4: piece C alone → 39 chars
 ```
 
-### Separator Hierarchy
-
-```mermaid
-flowchart LR
-    subgraph "Default Separator Order"
-        S1["\\n\\n (paragraphs)"] --> S2["\\n (lines)"]
-        S2 --> S3["  (words)"]
-        S3 --> S4["\"\" (characters)\nlast resort"]
-    end
-    subgraph "Why This Order?"
-        O1["Preserves largest\nsemantic units first"]
-        O2["Falls back to smaller\nunits only when needed"]
-        O3["Avoids mid-word cuts\nunless unavoidable"]
-    end
-```
-
-## Output
-
+**Output:**
 ```
 Chunk 1 [96 chars]: Natural language processing (NLP) is a subfield of linguistics, computer science, and artificial
 Chunk 2 [84 chars]: and artificial intelligence. It is concerned with the interactions between computers
@@ -130,10 +108,55 @@ Chunk 3 [81 chars]: and human language, in particular how to program computers t
 Chunk 4 [39 chars]: large amounts of natural language data.
 ```
 
+Chunk 1 ends with `artificial` and Chunk 2 starts with `and artificial` — that's the 14-character overlap tail carried forward.
+
+---
+
+## Mermaid Diagram
+
+```mermaid
+flowchart TD
+    A[Input Text] --> B[Find first separator\nthat exists in text]
+    B --> C[Split text by that separator]
+    C --> D{For each piece}
+    D --> E{len piece < chunk_size?}
+    E -- Yes --> F[Add to good_splits]
+    F --> D
+    E -- No --> G[Flush good_splits\nvia _merge_splits]
+    G --> H{new_separators\nremain?}
+    H -- Yes --> I["Recurse:\n_split_text(piece, new_separators)"]
+    I --> J[Collect sub-chunks]
+    J --> D
+    H -- No --> K[Save piece as-is]
+    K --> D
+    D -- done --> L[Flush remaining\ngood_splits via _merge_splits]
+    L --> M[Return all chunks]
+```
+
+---
+
+## Separator Hierarchy
+
+```mermaid
+flowchart LR
+    subgraph order["Default Separator Order — coarsest to finest"]
+        S1["\n\n — paragraph break"] --> S2["\n — line break"]
+        S2 --> S3["' ' — word space"]
+        S3 --> S4["'' — every character\nlast resort"]
+    end
+    subgraph why["Why this order?"]
+        W1["Keeps largest semantic\nunits intact first"]
+        W2["Falls back to finer\ngranularity only when needed"]
+        W3["Avoids mid-word cuts\nunless unavoidable"]
+    end
+```
+
+---
+
 ## Key Findings
 
-- **Overlap is visible**: Chunk 1 ends with `artificial` and Chunk 2 starts with `and artificial` — 15 characters of overlap. This works because the first line was recursively split by `" "` into words, allowing the overlap mechanism to pop front words and keep tail words as overlap.
-- **Character counts are closer to `chunk_size`** (96, 84, 81, 39) compared to the naive character splitter which produced a 167-char oversized chunk. The recursive approach breaks oversized pieces further.
-- **Cleanest boundaries**: Splits at sentence/word boundaries whenever possible, only falling back to character-level cuts as a last resort.
-- **Trade-off**: More computation than `CharacterTextSplitter` (recursive calls for each oversized piece), but produces more semantically coherent chunks.
-- The overlap is most impactful when the finest separator (`" "` or `""`) is reached, creating many small pieces that can be selectively retained.
+- **Overlap is visible**: Chunk 1 ends with `artificial` and Chunk 2 starts with `and artificial` — a 14-character overlap tail. This works because the first line was recursively split by `" "` into words, giving the overlap mechanism many small pieces to selectively retain.
+- **Closer to `chunk_size`**: Chunks are 96, 84, 81, 39 chars — much better than the naive character splitter, which left a 167-char oversized piece intact.
+- **Cleanest boundaries**: Splits at paragraph → line → word → character, only going finer when forced.
+- **Trade-off**: More computation than `CharacterTextSplitter` (recursive calls per oversized piece), but produces more semantically coherent chunks.
+- Overlap is most effective when the finest separator (`" "` or `""`) is reached, because many small pieces can be selectively popped from the front.

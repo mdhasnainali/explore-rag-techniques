@@ -1,122 +1,163 @@
 # Fixed-Size Chunking by Token
 
+## The Simple Idea (Feynman Explanation)
+
+LLMs don't read characters — they read **tokens**. A token is roughly a word-piece: `"natural"` is 1 token, `"processing"` is 1 token, `"(NLP)"` is 3 tokens. When you chunk by character count, you might give an LLM 100 characters that are actually 25 tokens, or 100 characters that are 40 tokens. The LLM's context window is measured in tokens, not characters.
+
+Token-based chunking fixes this: you encode the whole text into token IDs first, then slice the ID array into windows of exactly `chunk_size` tokens. Each window is decoded back to text. The character length of each chunk will vary, but the token count is always ≤ `chunk_size`.
+
+Think of it like cutting a film reel by frame count instead of by centimetres. Each frame is a different width on screen, but you always get exactly N frames per segment.
+
+---
+
 ## Algorithm
 
-Uses `CharacterTextSplitter.from_tiktoken_encoder()` to split text into chunks of a fixed number of **tokens**, measured by `tiktoken` with the `cl100k_base` encoding (used by GPT-4, text-embedding-3-*, etc.).
+Uses `CharacterTextSplitter.from_tiktoken_encoder()`. The core logic is in `split_text_on_tokens()` in `base.py`.
 
-The core logic is in `split_text_on_tokens()` in `base.py`.
-
-### Step-by-Step Logic
-
-**Step 1 — Encode text to token IDs**
-
-The input text is tokenized into a sequence of integer token IDs using the specified encoding.
+### Step 1 — Encode text to token IDs
 
 ```python
 input_ids = tokenizer.encode(text)
-# e.g., "Hello world" → [15339, 1917]
+# "Hello world" → [15339, 1917]
+# Each integer is one token in the cl100k_base vocabulary
 ```
 
-**Step 2 — Slide a window of `tokens_per_chunk` tokens**
-
-Start at position 0 and advance by `(tokens_per_chunk - chunk_overlap)` each iteration.
+### Step 2 — Slide a window of `chunk_size` tokens
 
 ```
 start_idx = 0
 while start_idx < len(input_ids):
-    cur_idx = min(start_idx + tokens_per_chunk, len(input_ids))
-    chunk_ids = input_ids[start_idx:cur_idx]
-    if not chunk_ids: break
+    cur_idx = min(start_idx + chunk_size, len(input_ids))
+    chunk_ids = input_ids[start_idx : cur_idx]
     decoded = tokenizer.decode(chunk_ids)
-    if decoded: splits.append(decoded)
-    if cur_idx == len(input_ids): break
-    start_idx += tokens_per_chunk - chunk_overlap
+    splits.append(decoded)
+    if cur_idx == len(input_ids):
+        break                              # reached the end
+    start_idx += chunk_size - chunk_overlap  # advance window
 ```
 
-**Step 3 — Decode each token window back to text**
+### Step 3 — Decode each window back to text
 
-Each window of token IDs is decoded into human-readable text. The character length of each chunk varies because different tokens represent different amounts of text.
+Each slice of token IDs is decoded into a human-readable string. Because tokens represent variable amounts of text, the character length of each chunk differs even though the token count is the same.
 
-**Trace with `chunk_size=100` tokens, `chunk_overlap=0`:**
+---
 
-```
-Text: "Natural language processing (NLP) is a subfield..."
-Encoded: [14120, 1471, 3753, 517, 11241, 25, 13019, 389, ...]  (56 tokens total)
+## Worked Example
 
-Window 1: tokens 0-99   → but only 56 tokens exist
-→ Since 56 < 100, only 1 window covers everything
-→ Chunk 1: "Natural language processing (NLP) is a ... natural language data."
-→ Chunk 1 token count: 56
-
-But with longer text (150+ tokens):
-Window 1:  tokens 0-99   → decode → Chunk 1 (21 tokens)
-Window 2:  tokens 0-99 + (100-0) = 100-199 → but start_idx advances by 100
-           Actually: start_idx = 0 + (100 - 0) = 100
-Window 2:  tokens 100-199 → decode → Chunk 2 (varies)
+**Code:**
+```python
+splitter = CharacterTextSplitter.from_tiktoken_encoder(
+    encoding_name="cl100k_base",
+    chunk_size=100,
+    chunk_overlap=0,
+    separator=""
+)
 ```
 
-**Key difference from character chunking:** The chunk size is measured in tokens, not characters. Tokens are a better measure of "how much an LLM can process" than raw characters.
-
-### Mermaid Diagram
-
-```mermaid
-flowchart TD
-    A[Input Text] --> B[tiktoken.encode\n→ token IDs]
-    B --> C[start_idx = 0]
-    C --> D{start_idx < len(tokens)?}
-    D -- No --> E[Return chunks]
-    D -- Yes --> F[cur_idx = min\nstart_idx + chunk_size\nlen(tokens)]
-    F --> G[Extract token slice\ninput_ids[start_idx:cur_idx]]
-    G --> H[tokenizer.decode\n→ text chunk]
-    H --> I{cur_idx == len(tokens)?}
-    I -- Yes --> E
-    I -- No --> J[Advance window:\nstart_idx += chunk_size - overlap]
-    J --> D
+**Input text** (the NLP paragraph):
+```
+\nNatural language processing (NLP) is a subfield of linguistics, computer science, and artificial
+intelligence. It is concerned with the interactions between computers\nand human language, in
+particular how to program computers to process and analyze\nlarge amounts of natural language data.\n
 ```
 
-### Sliding Window Visualization
-
-```mermaid
-flowchart LR
-    subgraph "Token Sequence"
-        T0["T0"] --- T1["T1"] --- T2["..."] --- Tn["Tn"]
-    end
-    subgraph "Chunk 1"
-        W1["Tokens 0-99"]
-    end
-    subgraph "Chunk 2"
-        W2["Tokens 85-184"]
-    end
-    subgraph "Chunk 3"
-        W3["Tokens 170-269"]
-    end
-    T0 --> W1
-    T1 --> W1
-    T2 --> W2
-    Tn --> W3
-    
-    N1["chunk_size=100\noverlap=15"]
-    N1 --> W1
-    N1 --> W2
-    N1 --> W3
-```
-
-## Output
+**Trace** (`chunk_size=100`, `chunk_overlap=0`):
 
 ```
-Chunk 1 [99 chars]: Natural language processing (NLP) is a subfield of linguistics, computer science, and artificial in
+Step 1 — Encode:
+  input_ids = tokenizer.encode(text)
+  Total tokens: 56
+
+Step 2 — Window 1:
+  start_idx = 0
+  cur_idx   = min(0 + 100, 56) = 56
+  chunk_ids = input_ids[0:56]   → all 56 tokens
+  decoded   → full text (split into 3 char-level chunks by CharacterTextSplitter)
+
+  Wait — from_tiktoken_encoder wraps split_text_on_tokens inside CharacterTextSplitter.
+  The token splitter produces 1 token-window (56 tokens < 100), then CharacterTextSplitter
+  splits that decoded text by separator="" at the character level with chunk_size=100 chars.
+
+  Character-level split of the 290-char decoded text at chunk_size=100:
+    Chunk 1: chars  0–98  → 99 chars  → 21 tokens
+    Chunk 2: chars 99–198 → 100 chars → 18 tokens
+    Chunk 3: chars 199–289 → 91 chars → 17 tokens
+```
+
+**Output:**
+```
+Chunk 1 [99 chars]:  Natural language processing (NLP) is a subfield of linguistics, computer science, and artificial in
 Chunk 2 [100 chars]: telligence. It is concerned with the interactions between computers and human language, in particul
-Chunk 3 [91 chars]: ar how to program computers to process and analyze large amounts of natural language data.
+Chunk 3 [91 chars]:  ar how to program computers to process and analyze large amounts of natural language data.
 
 Chunk 1 token count: 21
 Chunk 2 token count: 18
 Chunk 3 token count: 17
 ```
 
+The character counts differ (99, 100, 91) because different subword tokens represent different amounts of text. The token counts are all well under 100 — the token budget is respected.
+
+---
+
+## Mermaid Diagram
+
+```mermaid
+flowchart TD
+    A[Input Text] --> B[tiktoken.encode\n→ list of token IDs]
+    B --> C[start_idx = 0]
+    C --> D{start_idx < len tokens?}
+    D -- No --> E[Return chunks]
+    D -- Yes --> F["cur_idx = min(start_idx + chunk_size, len tokens)"]
+    F --> G["token_slice = input_ids[start_idx : cur_idx]"]
+    G --> H[tokenizer.decode\n→ text chunk]
+    H --> I{cur_idx == len tokens?}
+    I -- Yes --> E
+    I -- No --> J[start_idx += chunk_size - chunk_overlap]
+    J --> D
+```
+
+---
+
+## Sliding Window Visualization
+
+With `chunk_size=10` tokens and `chunk_overlap=3` (illustrative):
+
+```mermaid
+block-beta
+    columns 20
+    block:seq["Token sequence"]:20
+        t0["T0"] t1["T1"] t2["T2"] t3["T3"] t4["T4"] t5["T5"] t6["T6"] t7["T7"] t8["T8"] t9["T9"] t10["T10"] t11["T11"] t12["T12"] t13["T13"] t14["T14"] t15["T15"] t16["T16"] t17["T17"] t18["T18"] t19["T19"]
+    end
+    block:c1["Chunk 1 — T0..T9"]:10
+        space:10
+    end
+    space:7
+    block:c2["Chunk 2 — T7..T16"]:10
+        space:10
+    end
+    space:3
+    block:c3["Chunk 3 — T14..T19"]:6
+        space:6
+    end
+```
+
+With `chunk_overlap=0` (as in the actual code), windows are strictly adjacent — no shared tokens between chunks.
+
+```
+chunk_size=100, chunk_overlap=0:
+
+  Window 1: tokens [0 .. 99]    → Chunk 1
+  Window 2: tokens [100 .. 199] → Chunk 2
+  Window 3: tokens [200 .. 299] → Chunk 3
+  (no overlap — each token appears in exactly one chunk)
+```
+
+---
+
 ## Key Findings
 
-- **Character count varies** (99, 100, 91 chars) even though token count is uniform. Common subwords/spaces tokenize to fewer tokens per character, so chunks have inconsistent character lengths despite identical token budgets.
-- **Token-aware chunking** guarantees each chunk fits an LLM's context window, avoiding subtle truncation that character-based chunking causes.
-- With `chunk_overlap=0`, windows are strictly adjacent with no overlap. With overlap > 0, the window slides by `chunk_size - overlap` tokens each step, producing overlapping token sequences.
-- `chunk_size=100` tokens is quite small — typical retrieval uses 75-150 tokens per chunk for dense retrieval scenarios.
-- **Alternatives** for tokenization: spaCy (linguistic), SentenceTransformers (semantic), NLTK (general NLP), KoNLPy (Korean). Each produces different token boundaries and affects chunk quality.
+- **Character count varies** (99, 100, 91) even though the token budget is uniform. Subword tokens encode different amounts of text, so character lengths are inconsistent.
+- **Token-aware chunking** guarantees each chunk fits within an LLM's context window — something character-based chunking cannot guarantee.
+- With `chunk_overlap=0`, windows are strictly adjacent. With `chunk_overlap > 0`, the window advances by `chunk_size - overlap` tokens, so the overlapping tokens appear in both the current and next chunk.
+- `chunk_size=100` tokens is small. Typical RAG pipelines use 256–512 tokens per chunk for dense retrieval.
+- **Alternatives** for tokenization: spaCy (linguistic boundaries), SentenceTransformers (semantic), NLTK (general NLP), KoNLPy (Korean). Each produces different token boundaries and affects chunk quality.

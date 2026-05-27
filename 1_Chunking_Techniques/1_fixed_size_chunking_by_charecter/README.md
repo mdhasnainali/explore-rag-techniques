@@ -1,107 +1,169 @@
 # Fixed-Size Chunking by Character
 
+## The Simple Idea (Feynman Explanation)
+
+Imagine you have a long essay and you need to cut it into pieces of exactly 100 characters each. You have two tools:
+
+- **Scissors with no ruler** (`separator=""`): You count exactly 100 characters and cut — even if you're in the middle of the word `artifi|cial`. The pieces are uniform in size but words get chopped.
+- **Scissors that only cut at spaces** (`separator=" "`): You cut at the nearest space before 100 characters. Words stay whole, but pieces vary slightly in size.
+- **Scissors that only cut at newlines** (`separator="\n"`): You cut only where someone pressed Enter. Paragraphs stay intact, but a long paragraph becomes one giant piece.
+
+The **overlap** is like a sticky note: after cutting, you copy the last 15 characters of the current piece onto the front of the next piece. This way, context at the boundary isn't lost.
+
+---
+
 ## Algorithm
 
-Uses `langchain_text_splitters.CharacterTextSplitter` to split text into chunks of a fixed number of characters. The core logic lives in `_merge_splits` in `base.py`.
+Uses `langchain_text_splitters.CharacterTextSplitter`. The core merging logic lives in `_merge_splits()` in `base.py`.
 
-### Step-by-Step Logic
+### Step 1 — Split the text by separator
 
-**Step 1 — Split the text by separator**
-
-The text is divided using the specified `separator` via regex. With `separator=""`, every character is an individual split point. With `separator="\n"`, the text splits on newline boundaries.
+The text is divided using the specified `separator` via regex. The result is a list of pieces.
 
 ```
 Input:  "Hello world. This is a test."
-        separator=""   →  ["H","e","l","l","o"," ","w","o","r","l","d","."," ","T","h","i","s"," ","i","s"," ","a"," ","t","e","s","t","."]
-        separator=" "  →  ["Hello", "world.", "This", "is", "a", "test."]
+
+separator=""   →  ["H","e","l","l","o"," ","w","o","r","l","d","."," ","T","h","i","s"," ","i","s"," ","a"," ","t","e","s","t","."]
+separator=" "  →  ["Hello", "world.", "This", "is", "a", "test."]
+separator="\n" →  ["Hello world. This is a test."]   (no newlines → one piece)
 ```
 
-**Step 2 — Merge splits into chunks targeting `chunk_size`**
+### Step 2 — Merge pieces into chunks targeting `chunk_size`
 
-Iterate through the split pieces, accumulating them into a `current_doc`. Track the running `total` character count. The separator length is added when joining multiple pieces.
+Walk through the pieces, accumulating them into `current_doc`. When adding the next piece would exceed `chunk_size`, finalize the current chunk first.
 
 ```
 current_doc = [], total = 0
-for each split piece d:
-    len_ = len(d)
-    if (total + len_ + separator_cost) > chunk_size:
-        # chunk boundary reached — finalize current_doc
-        save current_doc as a chunk
-        # overlap: pop front elements while total > chunk_overlap
-        while total > chunk_overlap:
-            total -= len(current_doc[0]) + separator_cost
-            current_doc = current_doc[1:]   // drop from front
-    current_doc.append(d)
-    total += len_ + separator_cost
+
+for each piece d:
+    if (total + len(d) + separator_cost) > chunk_size:
+        → save current_doc as a chunk
+        → trim overlap: pop from front while total > chunk_overlap
+    append d to current_doc
+    total += len(d) + separator_cost
+
+save remaining current_doc as final chunk
 ```
 
-**Step 3 — Apply overlap (the while loop)**
+### Step 3 — Apply overlap (the trim loop)
 
-When a chunk is finalized, the while loop pops elements from the **front** of `current_doc`. The remaining tail elements (totaling ≤ `chunk_overlap`) carry forward as the start of the next chunk.
-
-**Trace with `separator=""`, `chunk_size=100`, `chunk_overlap=15`:**
+After saving a chunk, the while loop pops pieces from the **front** of `current_doc` until `total ≤ chunk_overlap`. The surviving tail becomes the start of the next chunk — that's the overlap.
 
 ```
-Text: "\nNatural language processing ... large amounts of natural language data.\n"
-Splits (separator=""): Each character is its own element (~167 chars total)
+chunk_overlap = 15
 
-  Piece 1-99:  accumulate → total=99
-  Piece 100:   adding would exceed 100, so:
-               → save chunk 1 (chars 1-99)
-               → while total(99) > 15: pop front char, total=98 ... pop front char, total=15
-               → current_doc now holds the last 15 characters
-  Piece 100:   append, total = 15+1 = 16
-  Piece 101:   append, total = 17
+After saving chunk 1 (total = 99):
+  pop "N" → total = 98
+  pop "a" → total = 97
   ...
-  (continues until all characters consumed)
+  pop until total = 15
+  → current_doc now holds the last 15 characters
+  → these 15 chars become the start of chunk 2
 ```
 
-### Mermaid Diagram
+---
+
+## Worked Example
+
+**Code:**
+```python
+splitter = CharacterTextSplitter(
+    chunk_size=100,
+    chunk_overlap=15,
+    separator=""        # Default is "\n\n"
+)
+```
+
+**Input text** (~167 characters after the leading newline):
+```
+\nNatural language processing (NLP) is a subfield of linguistics, computer science, and artificial
+intelligence. It is concerned with the interactions between computers\nand human language, in
+particular how to program computers to process and analyze\nlarge amounts of natural language data.\n
+```
+
+**Trace** (`separator=""`, so every character is its own piece):
+
+```
+Pieces 1–99:   accumulate → total = 99
+Piece 100:     adding 1 char would make total = 100, which equals chunk_size.
+               LangChain's condition is (total + len_) > chunk_size, so 100 > 100 is False.
+               → append piece 100, total = 100
+
+Piece 101:     101 > 100 → boundary hit!
+               → save chunk 1 (chars 1–100, but first char is \n so visible = 99 chars)
+               → trim: pop chars from front until total ≤ 15
+               → current_doc = last 15 chars of chunk 1
+               → append piece 101, total = 16
+
+... continues until all characters consumed
+```
+
+**Output:**
+```
+Chunk 1 [99 chars]:  Natural language processing (NLP) is a subfield of linguistics, computer science, and artificial in
+Chunk 2 [100 chars]: d artificial intelligence. It is concerned with the interactions between computers and human langua
+Chunk 3 [100 chars]: nd human language, in particular how to program computers to process and analyze large amounts of n
+Chunk 4 [36 chars]:  ge amounts of natural language data.
+```
+
+Notice `artificial in` at the end of chunk 1 and `d artificial` at the start of chunk 2 — the word `artificial` was split mid-word. That's blind cutting.
+
+---
+
+## Mermaid Diagram
 
 ```mermaid
 flowchart TD
-    A[Input Text] --> B[Split by separator\nregex.split]
-    B --> C{Iterate splits}
-    C --> D[Accumulate into\ncurrent_doc]
-    D --> E{Would adding this\nsplit exceed chunk_size?}
-    E -- No --> D
-    E -- Yes --> F[Save current_doc\nas a chunk]
-    F --> G{total > chunk_overlap?}
-    G -- Yes --> H[Pop front element\nfrom current_doc]
-    H --> G
-    G -- No --> I[Append current split\nto remaining tail]
-    I --> C
-    C --> J[Save final\ncurrent_doc]
+    A[Input Text] --> B[Split by separator\nvia regex]
+    B --> C[pieces list]
+    C --> D{More pieces?}
+    D -- No --> J[Save remaining\ncurrent_doc as chunk]
     J --> K[Return all chunks]
+    D -- Yes --> E[Next piece d]
+    E --> F{total + len d\n> chunk_size?}
+    F -- No --> I[Append d to current_doc\ntotal += len d]
+    I --> D
+    F -- Yes --> G[Save current_doc\nas a chunk]
+    G --> H{total > chunk_overlap?}
+    H -- Yes --> H2[Pop front piece\ntotal -= len front]
+    H2 --> H
+    H -- No --> I
 ```
 
-### Separator Behavior Comparison
+---
+
+## Separator Behavior Comparison
 
 ```mermaid
 flowchart LR
-    subgraph "separator=\"\" (Blind)"
-        T1["Natural language processin|g (NLP) is a sub..."]
+    subgraph sep_empty["separator=&quot;&quot; — Blind Cut"]
+        direction TB
+        E1["...computer science, and artifi"]
+        E2["cial intelligence. It is..."]
+        E1 -. "word split mid-way" .-> E2
     end
-    subgraph "separator=\"\\n\" (Newline)"
-        T2["Line 1 (167 chars) -> Chunk 1\nLine 2 (81 chars)  -> Chunk 2\nLine 3 (39 chars)  -> Chunk 3"]
+
+    subgraph sep_space["separator=&quot; &quot; — Word Boundary"]
+        direction TB
+        S1["...computer science, and"]
+        S2["artificial intelligence. It is..."]
+        S1 -. "cut at space" .-> S2
     end
-    subgraph "separator=\" \" (Word)"
-        T3["Words are atomic units\nNo mid-word cuts"]
+
+    subgraph sep_newline["separator=&quot;\n&quot; — Line Boundary"]
+        direction TB
+        N1["Natural language processing...\n(entire first line = 1 piece)"]
+        N2["and human language... (1 piece)"]
+        N1 -. "cut at newline" .-> N2
     end
 ```
 
-## Output
-
-```
-Chunk 1 [99 chars]: Natural language processing (NLP) is a subfield of linguistics, computer science, and artificial in
-Chunk 2 [100 chars]: d artificial intelligence. It is concerned with the interactions between computers and human langua
-Chunk 3 [100 chars]: nd human language, in particular how to program computers to process and analyze large amounts of n
-Chunk 4 [36 chars]: ge amounts of natural language data.
-```
+---
 
 ## Key Findings
 
-- **Blind cutting** (`separator=""`) splits words arbitrarily (e.g., `artificial in` / `d artificial`), fragmenting tokens and degrading retrieval quality.
-- **Smart cutting** (`separator="\n"`) preserves whole lines but can produce oversized chunks if a line exceeds `chunk_size`. Overlap may not apply because each line is a single atomic piece — popping the only element leaves nothing to carry forward.
-- The `chunk_overlap` mechanism only produces visible overlap when a chunk accumulates **multiple small splits**. A single large atomic piece cannot be partially carried over.
-- For visible overlap, use a separator that generates many small pieces: `separator=" "` (words) or `separator=""` (characters).
+- **Blind cutting** (`separator=""`) splits words arbitrarily — `artificial in` / `d artificial` — fragmenting tokens and degrading retrieval quality.
+- **Word cutting** (`separator=" "`) keeps words whole. Overlap works well because each word is a small piece that can be selectively retained.
+- **Line cutting** (`separator="\n"`) preserves whole lines but overlap often has no effect: a single 167-char line is one atomic piece — you can't partially carry it forward.
+- The `chunk_overlap` mechanism only produces visible overlap when a chunk is built from **multiple small pieces**. A single large atomic piece cannot be partially carried over.
+- The default separator is `"\n\n"` (double newline / paragraph break), not `""`.
