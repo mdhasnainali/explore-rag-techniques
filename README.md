@@ -193,7 +193,7 @@ This repository is actively maintained. New techniques and research papers are a
 
 ## 📄 License
 
-MIT License — free to use, share, and build on.
+[MIT License](./LICENSE) — free to use, share, and build on.
 
 ---
 
