@@ -1,18 +1,24 @@
 # 🔍 Explore RAG Techniques
-### The Complete Hands-On Learning Reference for Retrieval-Augmented Generation
 
-<p align="center">
-  <a href="mailto:mdhasnainali.01@gmail.com"><img src="https://img.shields.io/badge/Email-mdhasnainali.01@gmail.com-D14836?logo=gmail&logoColor=white" alt="Email"></a>
-  <a href="https://www.linkedin.com/in/mdhasnainali/"><img src="https://img.shields.io/badge/LinkedIn-mdhasnainali-0A66C2?logo=linkedin" alt="LinkedIn"></a>
-  <a href="https://github.com/mdhasnainali/explore-rag-techniques"><img src="https://img.shields.io/badge/GitHub-explore--rag--techniques-181717?logo=github" alt="GitHub"></a>
-</p>
+<div align="center">
 
-<p align="center">
-  <a href="https://github.com/mdhasnainali/explore-rag-techniques/commits/main"><img src="https://img.shields.io/github/last-commit/mdhasnainali/explore-rag-techniques?label=updated&color=blue" alt="Last commit"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License"></a>
-  <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome"></a>
-  <a href="https://github.com/mdhasnainali/explore-rag-techniques/stargazers"><img src="https://img.shields.io/github/stars/mdhasnainali/explore-rag-techniques?style=social" alt="Stars"></a>
-</p>
+
+*Every technique implemented in Python · Every concept explained simply · Continuously updated*
+
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
+![FAISS](https://img.shields.io/badge/FAISS-Vector_Search-00BFFF?logo=meta&logoColor=white)
+![LangChain](https://img.shields.io/badge/LangChain-Orchestration-1C3C3C?logo=langchain&logoColor=white)
+![OpenAI](https://img.shields.io/badge/OpenAI-Embeddings-412991?logo=openai&logoColor=white)
+![HuggingFace](https://img.shields.io/badge/HuggingFace-Models-FFD21E?logo=huggingface&logoColor=black)
+![NetworkX](https://img.shields.io/badge/NetworkX-Graph_RAG-orange)
+
+[![Last Commit](https://img.shields.io/github/last-commit/mdhasnainali/explore-rag-techniques?label=updated&color=blue)](https://github.com/mdhasnainali/explore-rag-techniques/commits/main)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Stars](https://img.shields.io/github/stars/mdhasnainali/explore-rag-techniques?style=social)](https://github.com/mdhasnainali/explore-rag-techniques/stargazers)
+
+</div>
+
 
 > **The living, hands-on reference for RAG.** Every technique implemented in Python. Every concept explained simply. Continuously updated as the field evolves.
 
@@ -20,7 +26,7 @@ A practical, continuously updated learning resource covering every layer of Retr
 
 **New here?** Start with [What is RAG?](#-what-is-rag) → follow the [Learning Path](#-learning-path) → run your first example in under 2 minutes.
 
----
+
 
 ## 📚 Quick Navigation
 
