@@ -20,8 +20,6 @@
 </div>
 
 
-> **The living, hands-on reference for RAG.** Every technique implemented in Python. Every concept explained simply. Continuously updated as the field evolves.
-
 A practical, continuously updated learning resource covering every layer of Retrieval-Augmented Generation — from how to split a document to how to evaluate whether your system actually works. Each technique comes with runnable Python code, a Feynman-style explanation, step-by-step algorithm breakdown, Mermaid diagrams, worked examples, and honest pros/cons.
 
 **New here?** Start with [What is RAG?](#-what-is-rag) → follow the [Learning Path](#-learning-path) → run your first example in under 2 minutes.
