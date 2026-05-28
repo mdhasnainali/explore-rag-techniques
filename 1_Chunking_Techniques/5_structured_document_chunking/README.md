@@ -18,8 +18,7 @@ Think of it like cutting a newspaper: a blind cutter slices at every 10 cm. A st
 | 2 | `2_structured_document_chunking_json.py` | `RecursiveJsonSplitter` | JSON | Object / array boundaries |
 | 3 | `3_structured_document_chunking_code.py` | `RecursiveCharacterTextSplitter.from_language()` | Source code | `class`, `def`, `\n\n` |
 | 4 | `4_structured_document_chunking_html.py` | `HTMLHeaderTextSplitter` | HTML | `<h1>`–`<h6>` tags |
-| 5 | `5_rag_over_csv/` | Row-to-text rendering | CSV | One row = one retrieval unit |
-| 6 | `6_rag_over_json/` | Object-to-text rendering | JSON | One object = one retrieval unit |
+| 5 | `5_structured_document_chunking_csv.py` | Row-to-text rendering | CSV | One row = one retrieval unit |
 
 ---
 
@@ -263,27 +262,35 @@ flowchart TD
 
 ---
 
-## 5 — RAG over CSV (row-to-text rendering)
+## 5 — CSV (`row-to-text rendering`)
 
 ### How it works
 
-A CSV file is already structured — each row is one entity. The challenge is that a vector search engine only understands text. The solution is to render each row as labeled key-value text so the embedding model understands what each value means.
+A CSV file is already structured — each row is one entity (one customer, one product, one record). The challenge is that a vector search engine only understands text. The solution is to render each row as labeled key-value text so the embedding model understands what each value means.
 
 ```python
 def row_to_text(row: dict) -> str:
     return "\n".join(f"{key}: {value}" for key, value in row.items() if value)
 
-# "Alice Chen,Engineering,95000" becomes:
+# Row: Alice Chen, Engineering, 95000
+# Becomes:
 # name: Alice Chen
 # department: Engineering
 # salary: 95000
 ```
 
-Each rendered row is one retrieval unit. The original row values are stored as metadata for exact-value filtering.
+Each rendered row is one retrieval unit — no arbitrary chunking needed.
 
 ### Output
 
 ```
+Sample indexed text (row 1):
+name: Alice Chen
+department: Engineering
+salary: 95000
+start_date: 2021-03-15
+status: active
+
 Query: 'Who are the engineers and what do they earn?'
   [score=0.408] Alice Chen — Engineering
   [score=0.384] Carol White — Engineering
@@ -291,7 +298,6 @@ Query: 'Who are the engineers and what do they earn?'
 
 Query: 'Which employees are inactive?'
   [score=0.380] Frank Lee — HR
-  [score=0.351] Alice Chen — Engineering
 ```
 
 ### Mermaid Diagram
@@ -311,74 +317,8 @@ flowchart TD
 ### Key findings
 
 - **Column names are context, not noise.** Indexing `"95000"` alone is useless. Indexing `"salary: 95000"` lets the retriever understand what the number means.
-- **Metadata filters outperform embeddings for exact values.** A query for `status = "active"` is better served by a metadata filter than by semantic similarity.
-- **Wide rows need grouping.** A row with 50 columns produces a long, diluted embedding. Group related columns into logical sections.
-
-See [`5_rag_over_csv/README.md`](5_rag_over_csv/README.md) for the full worked example and pros/cons.
-
----
-
-## 6 — RAG over JSON (object-to-text rendering)
-
-### How it works
-
-JSON is a tree. Dumping the entire JSON as a string produces a noisy embedding. The right approach is to split at object boundaries and render each object as readable key-value text that preserves the hierarchy.
-
-```python
-def render_object(obj: dict, prefix: str = "") -> str:
-    lines = []
-    for key, value in obj.items():
-        full_key = f"{prefix}.{key}" if prefix else key
-        if isinstance(value, dict):
-            lines.append(render_object(value, prefix=full_key))
-        elif isinstance(value, list):
-            lines.append(f"{full_key}: {', '.join(str(v) for v in value)}")
-        else:
-            lines.append(f"{full_key}: {value}")
-    return "\n".join(lines)
-
-# {"award": "Nobel Prize", "year": 1911, "winners": ["Marie Curie"]} becomes:
-# award: Nobel Prize
-# year: 1911
-# winners: Marie Curie
-```
-
-### Output
-
-```
-Query: 'Which Nobel Prize did Marie Curie win alone?'
-  [score=0.617] Chemistry 1911 — Marie Curie
-  [score=0.566] Physics 1903 — Marie Curie, Pierre Curie, Henri Becquerel
-
-Query: 'Who won the Nobel Peace Prize?'
-  [score=0.640] Peace 1964 — Martin Luther King Jr.
-```
-
-### Mermaid Diagram
-
-```mermaid
-flowchart TD
-    A[JSON data] --> B{List of objects\nor nested doc?}
-    B -- List --> C[Each object\nis one unit]
-    B -- Nested --> D[RecursiveJsonSplitter\nsplit at object boundaries]
-    C --> E[render_object\nkey: value lines]
-    D --> E
-    E --> F[Embed rendered text]
-    F --> G[FAISS index]
-    H[Query] --> I[Embed query]
-    I --> J[Similarity search]
-    G --> J
-    J --> K[Retrieved objects\nas context]
-```
-
-### Key findings
-
-- **Key names are context.** Indexing `"1911"` alone is meaningless. Indexing `"year: 1911"` tells the retriever this is a year.
-- **Nested paths prevent ambiguity.** Use `address.city` and `billing.city` to distinguish fields with the same name at different levels.
-- **Raw JSON strings are poor embeddings.** Curly braces, quotes, and colons add noise. Always render to readable text before indexing.
-- **For deeply nested documents**, use `RecursiveJsonSplitter` (covered in section 2 above) to split at object boundaries before rendering.
-
-See [`6_rag_over_json/README.md`](6_rag_over_json/README.md) for the full worked example and pros/cons.
+- **The inactive query correctly surfaces Frank Lee** because `"status: inactive"` appears in his row text.
+- **For exact-value filtering** (e.g., `status == "active"`), use metadata filters alongside semantic search rather than relying on embedding similarity alone.
 
 ---
 
