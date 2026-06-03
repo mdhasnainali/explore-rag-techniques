@@ -129,18 +129,19 @@ Every technique folder contains:
 
 ## 🔬 Research Coverage
 
-The [Chunking Techniques README](1_Chunking_Techniques/README.md) includes performance comparisons from three 2025 papers:
+The [Chunking Techniques README](1_Chunking_Techniques/README.md) includes performance comparisons from four papers:
 
 | Paper | Key finding |
 |---|---|
 | *Vision-Guided Chunking Is All You Need* — Tripathi et al. (2025) · [arXiv:2506.16035](https://arxiv.org/abs/2506.16035) | Vision-guided chunking: **+14% accuracy** over vanilla RAG on complex PDFs |
 | *Reconstructing Context* — Merola & Singh (2025) · [arXiv:2504.19754](https://arxiv.org/abs/2504.19754) | Contextual RankFusion beats late chunking; chunking method matters less than retrieval method |
 | *RAG for Service Discovery* — Pesl et al. (2025) · [arXiv:2505.19310](https://arxiv.org/abs/2505.19310) | Domain-specific chunking (endpoint-based) outperforms all generic strategies for API docs |
+| *Adaptive Chunking* — de Moura Júnior et al. (2026) · [arXiv:2603.25333](https://arxiv.org/abs/2603.25333) | Metric-guided adaptive selection raises answer correctness from 62–64% to **72%** (+33% questions answered) |
 
-Three emerging techniques not yet implemented but documented with full explanations:
-- **Late Chunking** — embed the whole document first, segment token embeddings after
-- **Contextual Retrieval (ContextualRankFusion)** — LLM-generated context + BM25 hybrid + reranking
-- **Vision-Guided Chunking** — multimodal LMM reads PDF as images, generates structured chunks
+Three emerging techniques documented in their own folders (not yet implemented):
+- **[Late Chunking](1_Chunking_Techniques/10_late_chunking/README.md)** — embed the whole document first, segment token embeddings after
+- **[Contextual Retrieval (ContextualRankFusion)](1_Chunking_Techniques/11_contextual_retrieval/README.md)** — LLM-generated context + BM25 hybrid + reranking
+- **[Vision-Guided Chunking](1_Chunking_Techniques/12_vision_guided_chunking/README.md)** — multimodal LMM reads PDF as images, generates structured chunks
 
 ---
 
