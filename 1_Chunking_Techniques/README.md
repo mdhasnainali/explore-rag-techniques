@@ -186,7 +186,7 @@ More intrinsic evaluation techniques will be documented here as they are added t
 The folders below implement 13 chunking strategies. They are the **subject** of evaluation — the metrics above measure their output quality.
 
 | # | Technique | Core idea | Split boundary |
-|---|---|---|---|---|
+|---|---|---|---|
 | 1 | [Fixed-size by character](1_fixed_size_chunking_by_character/README.md) | Count characters | Fixed char limit |
 | 2 | [Fixed-size by token](2_fixed_size_chunking_by_token/README.md) | Count tokens | Fixed token limit |
 | 3 | [Recursive character](3_recursive_chunking/README.md) | Try separators hierarchically | Paragraph → line → word → char |
