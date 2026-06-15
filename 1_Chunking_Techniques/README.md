@@ -1,26 +1,161 @@
-# Chunking Strategies for RAG — Overview & Research Analysis
+# Chunking Evaluation
 
-This folder covers nine chunking techniques implemented in this repository, plus three emerging techniques from recent research (2025) documented in their own folders. The final section provides a comparative performance analysis drawn directly from three papers.
+This page is the evaluation hub for chunking strategies. While the folders below implement 13 chunking techniques, this README focuses on **how to evaluate chunk quality** — intrinsic metrics that measure chunking quality without running retrieval or generation.
 
 ---
 
-## Techniques in This Repository
+## Why Evaluate Chunking Separately?
 
-| #   | Technique                                                     | Core idea                                  | Split boundary                  |
-| --- | ------------------------------------------------------------- | ------------------------------------------ | ------------------------------- |
-| 1   | Fixed-size by character                                       | Count characters                           | Fixed char limit                |
-| 2   | Fixed-size by token                                           | Count tokens                               | Fixed token limit               |
-| 3   | Recursive character                                           | Try separators hierarchically              | Paragraph → line → word → char  |
-| 4   | Semantic                                                      | Embedding similarity drop                  | Topic shift                     |
-| 5   | Structured (Markdown / HTML / JSON / Code)                    | Parse document format                      | Headings, keys, tags, functions |
-| 6   | Proposition / Agentic                                         | LLM decomposes into atomic facts           | Meaning                         |
-| 7   | Parent-Child (Hierarchical)                                   | Search small, return large                 | Two-level size hierarchy        |
-| 8   | Chunk Size Selection                                          | Evaluate candidate chunk sizes             | Retrieval and answer quality    |
-| 9   | Contextual Chunk Headers                                      | Prepend heading breadcrumbs                | Document structure              |
-| 10  | [Late Chunking](10_late_chunking/README.md)                   | Embed whole doc first, pool per segment    | Document-aware token embeddings |
-| 11  | [Contextual Retrieval](11_contextual_retrieval/README.md)     | LLM context prepend + BM25 hybrid + rerank | Full hybrid pipeline            |
-| 12  | [Vision-Guided Chunking](12_vision_guided_chunking/README.md) | Multimodal LMM reads PDF as images         | Visual layout + text            |
-| 13  | [Adaptive Chunking](13_adaptive_chunking/README.md)           | Score N strategies per document, pick best | Document-specific metric suite  |
+Most RAG pipelines judge chunking only by downstream end-to-end metrics (answer correctness, retrieval recall). This conflates chunk quality with retriever and LLM performance — a bad chunker can be masked by a good reranker, and a good chunker can look bad if the retriever is weak.
+
+**Intrinsic evaluation** measures the chunks themselves: are references intact? Are logical blocks preserved? Are sentences within a chunk coherent? These metrics are:
+
+- **Model-independent** — no LLM-as-a-judge loops or labelled retrieval benchmarks
+- **Cheap to compute** — text analysis + pre-computed embeddings; no generation calls
+- **Diagnostic** — tell you *why* a chunking strategy fails, not just that it underperforms
+
+The metrics below come from the Adaptive Chunking framework (de Moura Júnior et al., 2026), which introduced five complementary intrinsic metrics. This page documents them one by one, starting with References Completeness (RC).
+
+---
+
+## Evaluation Techniques
+
+### 1. References Completeness (RC)
+
+#### Definition
+
+**References Completeness (RC)** measures whether cross-references within a document are kept intact within a single chunk. A reference is "broken" when a chunk boundary falls between the reference's start and end — forcing the retriever to find only half the information.
+
+Two types of references are checked:
+
+| Reference type | Examples | Detection method |
+|---|---|---|
+| Explicit references | Citations (`[1]`, `(Author, 2023)`), footnotes (`¹`), section links (`see §3.2`, `as per clause 4.2`) | Regex pattern matching |
+| Entity-pronoun coreferences | `Dr. Smith ... he`, `the company ... its`, `the model ... it` | Coreference resolution model |
+
+---
+
+#### Why It Matters
+
+If a citation and its target, or a pronoun and its antecedent, land in different chunks, the LLM sees only part of the reference. Retrieval may pull the chunk with the citation but miss the definition chunk, or find the pronoun without its entity — leading to incomplete or hallucinated answers.
+
+Consider a legal contract:
+> "...the party shall be liable for damages not exceeding **[CHUNK BOUNDARY]** the amount specified in clause 4.2..."
+
+A retriever searching for "damages limit" returns only the first chunk — the limit value is in the next chunk and is never seen by the LLM.
+
+---
+
+#### Algorithm
+
+```
+Input:  Set of chunks C = {c₁, c₂, ..., cₖ}
+        Source document D
+
+1. Extract all chunk boundary positions B = {b₁, b₂, ..., bₖ₋₁}
+   where bⱼ is the character offset of the start of chunk cⱼ₊₁
+
+2. Find all entity-pronoun pairs P = {(e₁, p₁), ..., (eₙ, pₙ)}
+   using a coreference resolution model.
+   For each pair, record:
+     sᵢ = start offset of entity eᵢ
+     tᵢ = end offset of pronoun pᵢ
+
+3. For each pair (eᵢ, pᵢ):
+     mᵢ = 1  if  ∃ b ∈ B : sᵢ < b ≤ tᵢ  (boundary between entity and pronoun)
+     mᵢ = 0  otherwise
+
+4. RC = 1 − (1/N) × Σᵢ₌₁ᴺ mᵢ
+```
+
+An RC of 1.0 means every reference is fully contained within a single chunk. An RC of 0.5 means half of all references are broken across chunk boundaries.
+
+---
+
+#### Worked Example
+
+Document: *"The **transformer model** revolutionized NLP. **It** uses self-attention. **The model** was introduced in 2017 [1]."*
+
+**Fixed-size chunking (40 chars):**
+
+```
+Chunk 1: "The transformer model revolutionized NLP."
+Chunk 2: "It uses self-attention. The model was"
+Chunk 3: "introduced in 2017 [1]."
+```
+
+- Entity-pronoun pair 1: `transformer model` (chunk 1) → `It` (chunk 2) → **broken** (m₁ = 1)
+- Entity-pronoun pair 2: `transformer model` (chunk 1) → `The model` (chunk 2) → **broken** (m₂ = 1)
+- Citation `[1]` in chunk 3, its referent likely in an earlier chunk → depends on where the reference definition appears
+
+RC = 1 − (1/2) × (1 + 1) = **0.0** (all coreferences broken)
+
+**Sentence-based chunking:**
+
+```
+Chunk 1: "The transformer model revolutionized NLP. It uses self-attention."
+Chunk 2: "The model was introduced in 2017 [1]."
+```
+
+- Entity-pronoun pair 1: `transformer model` → `It` → same chunk → **intact** (m₁ = 0)
+- Entity-pronoun pair 2: `transformer model` → `The model` → different chunks → **broken** (m₂ = 1)
+
+RC = 1 − (1/2) × (0 + 1) = **0.5**
+
+---
+
+#### Results (from de Moura Júnior et al., 2026)
+
+RC scores across chunking methods on a mixed legal/technical/social science corpus:
+
+| Chunking Method | RC (%) |
+|---|---|
+| Sentence splitter | 86.3 |
+| Semantic chunking | 97.5 |
+| LangChain recursive | 96.1 |
+| LLM-regex (GPT) | 98.0 |
+| **Adaptive Chunking** | **99.0** |
+
+The adaptive method reaches near-perfect RC by selecting the strategy that best preserves references per document — structured for legal (clause-level), semantic for prose, recursive for technical docs.
+
+---
+
+#### References
+
+- **Adaptive Chunking (RC definition & algorithm):** de Moura Júnior, Lelong & Blangero (2026) — *Adaptive Chunking: Optimizing Chunking-Method Selection for RAG* — LREC 2026 — [arXiv:2603.25333](https://arxiv.org/abs/2603.25333)
+
+---
+
+### 2. Upcoming
+
+More intrinsic evaluation techniques will be documented here as they are added to the repository:
+
+- **Block Integrity (BI)** — Are paragraphs, code blocks, list items, and tables kept intact?
+- **Intrachunk Cohesion (ICC)** — How semantically similar are sentences within the same chunk?
+- **Document Contextual Coherence (DCC)** — How well do adjacent chunks relate to each other?
+- **Size Compliance (SC)** — Do chunks fall within the target token range?
+
+---
+
+## Chunking Techniques in This Repository
+
+The folders below implement 13 chunking strategies. They are the **subject** of evaluation — the metrics above measure their output quality.
+
+| # | Technique | Core idea | Split boundary |
+|---|---|---|---|
+| 1 | Fixed-size by character | Count characters | Fixed char limit |
+| 2 | Fixed-size by token | Count tokens | Fixed token limit |
+| 3 | Recursive character | Try separators hierarchically | Paragraph → line → word → char |
+| 4 | Semantic | Embedding similarity drop | Topic shift |
+| 5 | Structured (Markdown / HTML / JSON / Code) | Parse document format | Headings, keys, tags, functions |
+| 6 | Proposition / Agentic | LLM decomposes into atomic facts | Meaning |
+| 7 | Parent-Child (Hierarchical) | Search small, return large | Two-level size hierarchy |
+| 8 | Chunk Size Selection | Evaluate candidate chunk sizes | Retrieval and answer quality |
+| 9 | Contextual Chunk Headers | Prepend heading breadcrumbs | Document structure |
+| 10 | [Late Chunking](10_late_chunking/README.md) | Embed whole doc first, pool per segment | Document-aware token embeddings |
+| 11 | [Contextual Retrieval](11_contextual_retrieval/README.md) | LLM context prepend + BM25 hybrid + rerank | Full hybrid pipeline |
+| 12 | [Vision-Guided Chunking](12_vision_guided_chunking/README.md) | Multimodal LMM reads PDF as images | Visual layout + text |
+| 13 | [Adaptive Chunking](13_adaptive_chunking/README.md) | Score N strategies per doc, pick best | Document-specific metric suite |
 
 > Techniques 10–13 are **not yet implemented** — each folder contains a full explanation, algorithm, and performance data from the source papers.
 
@@ -34,10 +169,10 @@ _"Vision-Guided Chunking Is All You Need: Enhancing RAG with Multimodal Document
 _Tripathi et al. (2025) — [arXiv:2506.16035](https://arxiv.org/abs/2506.16035)_
 _Dataset: Internal benchmark of diverse PDF documents (technical manuals, financial reports, research papers)_
 
-| Chunking Method                    | RAG Accuracy |
-| ---------------------------------- | ------------ |
-| Vanilla RAG (fixed-size chunking)  | 0.78         |
-| Vision-Guided RAG (multimodal LMM) | **0.89**     |
+| Chunking Method | RAG Accuracy |
+|---|---|
+| Vanilla RAG (fixed-size chunking) | 0.78 |
+| Vision-Guided RAG (multimodal LMM) | **0.89** |
 
 **+14% accuracy improvement** from vision-guided chunking. The improvement is attributed to:
 
@@ -57,42 +192,42 @@ _Embedding model: Jina-V3 (best performer)_
 
 #### Late Chunking vs Early Chunking (NFCorpus, Jina-V3)
 
-| Method             | NDCG@5    | MAP@5 | F1@5      |
-| ------------------ | --------- | ----- | --------- |
-| Early — Fixed-size | 0.374     | 0.107 | 0.186     |
-| Late — Fixed-size  | **0.380** | 0.103 | 0.185     |
-| Early — Semantic   | 0.377     | 0.111 | **0.192** |
-| Late — Simple-Qwen | 0.384     | 0.105 | 0.185     |
-| Late — Topic-Qwen  | 0.383     | 0.102 | 0.179     |
+| Method | NDCG@5 | MAP@5 | F1@5 |
+|---|---|---|---|
+| Early — Fixed-size | 0.374 | 0.107 | 0.186 |
+| Late — Fixed-size | **0.380** | 0.103 | 0.185 |
+| Early — Semantic | 0.377 | 0.111 | **0.192** |
+| Late — Simple-Qwen | 0.384 | 0.105 | 0.185 |
+| Late — Topic-Qwen | 0.383 | 0.102 | 0.179 |
 
 Late chunking shows marginal improvement over early chunking with Jina-V3. However, with BGE-M3, early chunking (NDCG@5: 0.246) **significantly outperforms** late chunking (NDCG@5: 0.070) — late chunking is model-dependent.
 
 #### Late Chunking vs Early Chunking (MSMarco, Stella-V5)
 
-| Method             | NDCG@5    | MAP@5     |
-| ------------------ | --------- | --------- |
+| Method | NDCG@5 | MAP@5 |
+|---|---|---|
 | Early — Fixed-size | **0.630** | **0.501** |
-| Late — Fixed-size  | 0.503     | 0.340     |
+| Late — Fixed-size | 0.503 | 0.340 |
 
 Early chunking wins decisively on MSMarco with Stella-V5. Late chunking is not universally better.
 
 #### Contextual Retrieval vs Late Chunking (NFCorpus, Jina-V3, Fixed-Window)
 
-| Method                | NDCG@5    | MAP@5     | F1@5      | NDCG@10   | MAP@10    | F1@10     |
-| --------------------- | --------- | --------- | --------- | --------- | --------- | --------- |
-| Late Chunking         | 0.309     | 0.143     | 0.202     | 0.294     | 0.160     | 0.192     |
+| Method | NDCG@5 | MAP@5 | F1@5 | NDCG@10 | MAP@10 | F1@10 |
+|---|---|---|---|---|---|---|
+| Late Chunking | 0.309 | 0.143 | 0.202 | 0.294 | 0.160 | 0.192 |
 | Contextual RankFusion | **0.317** | **0.146** | **0.206** | **0.308** | **0.166** | **0.202** |
 
 Contextual RankFusion consistently outperforms late chunking, but at significantly higher computational cost.
 
 #### Fixed-size vs Semantic Chunking (Contextual setup, Jina-V3)
 
-| Chunking                      | Retrieval   | NDCG@5    | MAP@5     | F1@5      |
-| ----------------------------- | ----------- | --------- | --------- | --------- |
-| Fixed-Window Uncontextualized | Traditional | 0.303     | 0.137     | 0.193     |
-| Semantic Uncontextualized     | Traditional | 0.307     | 0.143     | 0.197     |
-| Fixed-Window Contextualized   | RankFusion  | **0.317** | **0.146** | **0.206** |
-| Semantic Contextualized       | RankFusion  | **0.317** | **0.146** | **0.209** |
+| Chunking | Retrieval | NDCG@5 | MAP@5 | F1@5 |
+|---|---|---|---|---|
+| Fixed-Window Uncontextualized | Traditional | 0.303 | 0.137 | 0.193 |
+| Semantic Uncontextualized | Traditional | 0.307 | 0.143 | 0.197 |
+| Fixed-Window Contextualized | RankFusion | **0.317** | **0.146** | **0.206** |
+| Semantic Contextualized | RankFusion | **0.317** | **0.146** | **0.209** |
 
 **Key finding:** Fixed-size and semantic chunking perform nearly identically. The retrieval method (RankFusion + reranking) matters far more than the chunking granularity.
 
@@ -111,10 +246,10 @@ This paper studies a domain-specific chunking problem: how to chunk OpenAPI (RES
 
 **Discovery Agent:** An agentic approach where the LLM first retrieves endpoint summaries, then fetches full specification details on demand. This improves precision significantly but reduces recall — the agent may miss relevant endpoints if the summary doesn't match the query.
 
-| Approach                  | Precision   | Recall              |
-| ------------------------- | ----------- | ------------------- |
-| Naive chunking            | Low         | Moderate            |
-| Endpoint-based chunking   | **High**    | **High**            |
+| Approach | Precision | Recall |
+|---|---|---|
+| Naive chunking | Low | Moderate |
+| Endpoint-based chunking | **High** | **High** |
 | Discovery Agent (agentic) | **Highest** | Lower (misses some) |
 
 **Implication for this repository:** Domain-specific chunking (like endpoint-based for APIs) consistently outperforms generic chunking strategies when the document has a well-defined logical unit (endpoint, clause, record).
@@ -248,15 +383,17 @@ flowchart TD
 
 7. **Adaptive, document-aware chunking significantly outperforms any fixed strategy** (_Adaptive Chunking_, [arXiv:2603.25333](https://arxiv.org/abs/2603.25333)): Selecting the best chunking method per document — guided by five intrinsic metrics (RC, BI, ICC, DCC, SC) — raises answer correctness from 62–64% to 72% and increases successfully answered questions by over 30%, without changing models or prompts. No single strategy wins on all document types.
 
+8. **Intrinsic chunking metrics expose root causes** (_Adaptive Chunking_, [arXiv:2603.25333](https://arxiv.org/abs/2603.25333)): RC and BI identify structural fragmentation, ICC measures semantic coherence, DCC captures document-level continuity, and SC ensures operational usability. Together they explain *why* a chunking strategy fails, enabling targeted improvements.
+
 ---
 
 ## References
 
-| Paper                                                                   | Authors                            | Year | Link                                                 |
-| ----------------------------------------------------------------------- | ---------------------------------- | ---- | ---------------------------------------------------- |
-| Vision-Guided Chunking Is All You Need                                  | Tripathi et al.                    | 2025 | [arXiv:2506.16035](https://arxiv.org/abs/2506.16035) |
-| Reconstructing Context: Evaluating Advanced Chunking Strategies for RAG | Merola & Singh                     | 2025 | [arXiv:2504.19754](https://arxiv.org/abs/2504.19754) |
-| RAG for Service Discovery: Chunking Strategies and Benchmarking         | Pesl et al.                        | 2025 | [arXiv:2505.19310](https://arxiv.org/abs/2505.19310) |
-| Adaptive Chunking: Optimizing Chunking-Method Selection for RAG         | de Moura Júnior, Lelong & Blangero | 2026 | [arXiv:2603.25333](https://arxiv.org/abs/2603.25333) |
-| Late Chunking: Contextual Chunk Embeddings                              | Günther et al.                     | 2024 | [arXiv:2409.04701](https://arxiv.org/abs/2409.04701) |
-| Dense X Retrieval (Proposition Chunking)                                | Chen et al.                        | 2023 | [arXiv:2312.06648](https://arxiv.org/abs/2312.06648) |
+| Paper | Authors | Year | Link |
+|---|---|---|---|
+| Adaptive Chunking: Optimizing Chunking-Method Selection for RAG | de Moura Júnior, Lelong & Blangero | 2026 | [arXiv:2603.25333](https://arxiv.org/abs/2603.25333) |
+| Vision-Guided Chunking Is All You Need | Tripathi et al. | 2025 | [arXiv:2506.16035](https://arxiv.org/abs/2506.16035) |
+| Reconstructing Context: Evaluating Advanced Chunking Strategies for RAG | Merola & Singh | 2025 | [arXiv:2504.19754](https://arxiv.org/abs/2504.19754) |
+| RAG for Service Discovery: Chunking Strategies and Benchmarking | Pesl et al. | 2025 | [arXiv:2505.19310](https://arxiv.org/abs/2505.19310) |
+| Late Chunking: Contextual Chunk Embeddings | Günther et al. | 2024 | [arXiv:2409.04701](https://arxiv.org/abs/2409.04701) |
+| Dense X Retrieval (Proposition Chunking) | Chen et al. | 2023 | [arXiv:2312.06648](https://arxiv.org/abs/2312.06648) |
