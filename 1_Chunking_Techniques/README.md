@@ -39,7 +39,14 @@ Two types of references are checked:
 
 If a citation and its target, or a pronoun and its antecedent, land in different chunks, the LLM sees only part of the reference. Retrieval may pull the chunk with the citation but miss the definition chunk, or find the pronoun without its entity — leading to incomplete or hallucinated answers.
 
-Consider a legal contract:
+**Example — broken pronoun reference:**
+
+> "Elon Musk is the CEO of Tesla. **[CHUNK BOUNDARY]** He founded SpaceX in 2002."
+
+A user queries "Who founded SpaceX?" The retriever returns only the second chunk — the LLM sees `He` but cannot resolve who `He` refers to. This is a **Missing Reference Error**.
+
+**Example — broken explicit reference:**
+
 > "...the party shall be liable for damages not exceeding **[CHUNK BOUNDARY]** the amount specified in clause 4.2..."
 
 A retriever searching for "damages limit" returns only the first chunk — the limit value is in the next chunk and is never seen by the LLM.
