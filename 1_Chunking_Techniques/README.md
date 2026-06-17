@@ -14,7 +14,7 @@ Most RAG pipelines judge chunking only by downstream end-to-end metrics (answer 
 - **Cheap to compute** — text analysis + pre-computed embeddings; no generation calls
 - **Diagnostic** — tell you *why* a chunking strategy fails, not just that it underperforms
 
-The metrics below come from the Adaptive Chunking framework (de Moura Júnior et al., 2026), which introduced five complementary intrinsic metrics. This page documents them one by one, starting with References Completeness (RC).
+The metrics below come from the Adaptive Chunking framework (de Moura Júnior et al., 2026), which introduced five complementary intrinsic metrics. This page documents them one by one, starting with References Completeness (RC) and Block Integrity (BI).
 
 ---
 
@@ -170,11 +170,157 @@ The adaptive method reaches near-perfect RC by selecting the strategy that best 
 
 ---
 
-### 2. Upcoming
+### 2. Block Integrity (BI)
+
+#### Definition
+
+**Block Integrity (BI)** measures the exact percentage of structural document elements — paragraphs, tables, and lists — that remain completely uncut after a document is divided into RAG chunks.
+
+A block is **broken** when a chunk boundary falls strictly inside the block's character span, beyond a 5-character tolerance buffer applied to each edge. Cuts within 5 characters of a block's edge are ignored to avoid false penalties from invisible formatting artefacts (trailing spaces, double newlines).
+
+---
+
+#### Why It Matters
+
+Structural blocks carry meaning as a unit. Splitting one destroys the structure the LLM needs to interpret the content.
+
+**Example — broken table:**
+
+> | Model | Year | Params | **[CHUNK BOUNDARY]** | BERT | 2018 | 110M |
+
+A retriever searching for "BERT parameters" returns the second chunk. The LLM sees `| BERT | 2018 | 110M |` with no column headers — it cannot identify which column is the year and which is the parameter count.
+
+**Example — broken list:**
+
+> "Key steps: 1. Tokenize input **[CHUNK BOUNDARY]** 2. Embed tokens 3. Compute attention"
+
+A query about how to process input retrieves only the first chunk. The LLM sees step 1 but misses steps 2 and 3 — the complete procedure is invisible to the model.
+
+---
+
+#### The 4-Step Process
+
+**Step 1 — Mapping the Blueprint**
+
+Before any chunking happens, an AI layout parser ([Azure AI Document Intelligence](https://azure.microsoft.com/en-us/products/ai-services/ai-document-intelligence) or [IBM Docling](https://github.com/DS4SD/docling)) scans the raw document and records the exact start and end character index for every paragraph, table, and list. This creates a master map of the document's natural boundaries.
+
+```
+Block map example:
+  Block 1 (paragraph):  chars   0 –  74
+  Block 2 (table):      chars  76 – 139
+  Block 3 (list):       chars 141 – 196
+```
+
+**Step 2 — Logging the Cut Points**
+
+The text splitter runs and divides the document into chunks based on token or character limits. The evaluation algorithm records the exact character coordinate of each cut — assembling a list of absolute split points B.
+
+```
+Example: 100-char fixed-size chunking → B = {100}
+```
+
+**Step 3 — The Boundary Test**
+
+For each block, the algorithm checks whether any split point falls strictly inside the block's inner span — the block's character range shrunk by 5 characters on each side. A cut must land deeper than 5 characters inside the block to flag it as broken.
+
+```
+For each block vⱼ with start aⱼ and end zⱼ:
+  inner span = [aⱼ + 5,  zⱼ − 5]
+  broken if any boundary b ∈ B satisfies  (aⱼ + 5) < b < (zⱼ − 5)
+```
+
+**Step 4 — Calculating the Integrity Score**
+
+All blocks that survived the cuts without being broken are tallied. The final Block Integrity score divides intact blocks by total blocks.
+
+```
+BI = intact_blocks / total_blocks
+```
+
+---
+
+#### Algorithm
+
+```
+Input:  Set of chunks C = {c₁, c₂, ..., cₖ}
+        Set of structural blocks V = {v₁, v₂, ..., vₘ}  (from layout parser)
+        Each block vⱼ has: start offset aⱼ, end offset zⱼ
+        Tolerance buffer T = 5 characters
+
+1. Extract chunk boundary positions B = {b₁, b₂, ..., bₖ₋₁}
+   where bⱼ is the character offset of the start of chunk cⱼ₊₁
+
+2. For each block vⱼ:
+     nⱼ = 1  if  ∃ b ∈ B : (aⱼ + T) < b < (zⱼ − T)   (block broken)
+     nⱼ = 0  otherwise
+
+3. intact_count = |{vⱼ : nⱼ = 0}|
+
+4. BI = intact_count / M
+```
+
+A BI of 1.0 means every structural block survived intact. A BI of 0.6 means 40% of blocks were cut by a chunk boundary.
+
+---
+
+#### Worked Example
+
+Document (3 structural blocks, 197 characters total):
+
+```
+[Block 1 — paragraph, chars 0–74]
+"Transformers use self-attention to relate all tokens in the input simultaneously."
+
+[Block 2 — table, chars 76–139]
+"| Model | Year | Params |
+|-------|------|--------|
+| BERT  | 2018 |  110M  |"
+
+[Block 3 — list, chars 141–196]
+"Key steps:
+1. Tokenize input
+2. Embed tokens
+3. Compute attention"
+```
+
+**Fixed-size chunking (100-char boundary):**
+
+```
+B = {100}, T = 5
+
+Block 1 (0–74):    inner span [5, 69].    100 > 69       → no boundary inside → intact   (n₁ = 0)
+Block 2 (76–139):  inner span [81, 134].  81 < 100 < 134 → boundary inside    → broken  (n₂ = 1)
+Block 3 (141–196): inner span [146, 191]. 100 < 146      → no boundary inside → intact   (n₃ = 0)
+```
+
+BI = 2 intact / 3 total = **0.667** — the table is split across two chunks. The LLM sees column headers in one chunk and data rows in another.
+
+**Structure-aware chunking (splits only at block boundaries):**
+
+```
+B = {75, 140}, T = 5
+
+Block 1 (0–74):    inner span [5, 69].    75 > 69          → no boundary inside → intact  (n₁ = 0)
+Block 2 (76–139):  inner span [81, 134].  75 < 81 and 140 > 134 → neither lands inside → intact  (n₂ = 0)
+Block 3 (141–196): inner span [146, 191]. 140 < 146        → no boundary inside → intact  (n₃ = 0)
+```
+
+BI = 3 intact / 3 total = **1.0** — every block survives. Headers and data rows are in the same chunk; the LLM sees a complete, queryable table.
+
+---
+
+#### References
+
+- **Adaptive Chunking (BI definition & algorithm):** de Moura Júnior, Lelong & Blangero (2026) — *Adaptive Chunking: Optimizing Chunking-Method Selection for RAG* — LREC 2026 — [arXiv:2603.25333](https://arxiv.org/abs/2603.25333)
+- **Azure AI Document Intelligence (layout parser used in paper):** [azure.microsoft.com](https://azure.microsoft.com/en-us/products/ai-services/ai-document-intelligence)
+- **IBM Docling (open-source layout parser used in repository):** [github.com/DS4SD/docling](https://github.com/DS4SD/docling)
+
+---
+
+### 3. Upcoming
 
 More intrinsic evaluation techniques will be documented here as they are added to the repository:
 
-- **Block Integrity (BI)** — Are paragraphs, code blocks, list items, and tables kept intact?
 - **Intrachunk Cohesion (ICC)** — How semantically similar are sentences within the same chunk?
 - **Document Contextual Coherence (DCC)** — How well do adjacent chunks relate to each other?
 - **Size Compliance (SC)** — Do chunks fall within the target token range?
