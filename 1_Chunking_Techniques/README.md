@@ -14,7 +14,7 @@ Most RAG pipelines judge chunking only by downstream end-to-end metrics (answer 
 - **Cheap to compute** — text analysis + pre-computed embeddings; no generation calls
 - **Diagnostic** — tell you *why* a chunking strategy fails, not just that it underperforms
 
-The metrics below come from the Adaptive Chunking framework (de Moura Júnior et al., 2026), which introduced five complementary intrinsic metrics. This page documents them one by one: References Completeness (RC), Block Integrity (BI), Intrachunk Cohesion (ICC), and Document Contextual Coherence (DCC).
+The metrics below come from the Adaptive Chunking framework (de Moura Júnior et al., 2026), which introduced five complementary intrinsic metrics. This page documents all five: References Completeness (RC), Block Integrity (BI), Intrachunk Cohesion (ICC), Document Contextual Coherence (DCC), and Size Compliance (SC).
 
 ---
 
@@ -644,11 +644,220 @@ Reordered DCC = (0.81 + 0.85 + 0.73 + 0.68) / 4 = **0.77** — improved coherenc
 
 ---
 
-### 5. Upcoming
+### 5. Size Compliance (SC)
 
-More intrinsic evaluation techniques will be documented here as they are added to the repository:
+#### Definition
 
-- **Size Compliance (SC)** — Do chunks fall within the target token range?
+**Size Compliance (SC)** measures the percentage of generated chunks that fall within a specified minimum and maximum token threshold. It acts as a technical gatekeeper ensuring all chunks fit within downstream LLM context windows and vector embedding constraints without fragmentation or truncation.
+
+Unlike metrics that evaluate content quality (RC, BI, ICC, DCC), SC is a structural constraint: does the chunk respect the system's hard limits? SC operates on a binary pass-or-fail basis — a chunk either fits the window or it does not.
+
+---
+
+#### Why It Matters
+
+LLM context windows and vector embedding models have fixed maximum token capacities. Exceeding these limits causes truncation or failures downstream. Conversely, setting minimum sizes too high forces bloated chunks with unnecessary repetition. SC ensures chunking respects both bounds — essential for production reliability.
+
+**Example — oversized chunk:**
+
+> Token limit: 512 tokens per chunk
+> Generated chunk: 589 tokens (exceeds by 77 tokens)
+
+The LLM's context window clips the chunk to 512 tokens, cutting off the last sentence. Information is lost; the model sees incomplete facts. An indexing system may reject the chunk entirely, or a streaming API fails mid-response.
+
+**Example — undersized chunk:**
+
+> Minimum size: 50 tokens (to avoid trivial fragments)
+> Generated chunk: 12 tokens ("The model is fast.")
+
+The chunk is too small to be meaningful. Retrieval returns it alongside larger chunks, wasting context on a trivial statement.
+
+**Example — compliant chunk:**
+
+> Token range: 100–512 tokens
+> Generated chunk: 287 tokens
+
+Fits perfectly. No truncation. No waste. Safely nestles within downstream systems.
+
+---
+
+#### The Calculation Method
+
+**Step 1 — Define Size Boundaries**
+
+Choose a minimum token count `min_tokens` and maximum token count `max_tokens` based on your LLM context window, embedding model, and operational constraints.
+
+```
+Example:
+  min_tokens = 50      (avoid trivial fragments)
+  max_tokens = 512     (fit within typical LLM windows)
+  Acceptable range: [50, 512] tokens
+```
+
+**Step 2 — Tokenize All Chunks**
+
+Use the same tokenizer as your downstream LLM (e.g., GPT-2, GPT-3.5, Claude) to count tokens in each chunk. Token counts must be consistent with how the final system will count.
+
+```
+c₁ = 230 tokens
+c₂ = 45 tokens
+c₃ = 501 tokens
+c₄ = 312 tokens
+c₅ = 128 tokens
+```
+
+**Step 3 — Flag Non-Compliant Chunks**
+
+For each chunk, check whether its token count falls within [min_tokens, max_tokens]. Flag any chunk outside this range.
+
+```
+c₁ = 230 ✓ (within 50–512)
+c₂ = 45  ✗ (below 50)
+c₃ = 501 ✓ (within 50–512)
+c₄ = 312 ✓ (within 50–512)
+c₅ = 128 ✓ (within 50–512)
+
+Non-compliant: 1 chunk (c₂)
+```
+
+**Step 4 — Calculate Compliance Score**
+
+Use the formula:
+
+```
+SC = 1 − (Count of Non-Compliant Chunks / Total Chunks Generated)
+```
+
+An SC of 1.0 means 100% of chunks are compliant. An SC of 0.8 means 20% of chunks violate the size constraints.
+
+---
+
+#### Algorithm
+
+```
+Input:  Set of chunks C = {c₁, c₂, ..., cₙ}
+        Tokenizer T (matching downstream LLM)
+        min_tokens, max_tokens (size boundaries)
+
+1. non_compliant_count = 0
+
+2. For each chunk cᵢ ∈ C:
+
+     3. token_count = T(cᵢ)    (count tokens in chunk)
+     
+     4. if token_count < min_tokens OR token_count > max_tokens:
+           non_compliant_count += 1
+
+5. SC = 1 − (non_compliant_count / N)
+
+6. Return SC (and optionally per-chunk compliance status)
+```
+
+---
+
+#### Core Limitation: Binary Rigidity
+
+SC operates on a **strict pass-or-fail condition** for each chunk. No partial credit is awarded for near-misses.
+
+**Example:**
+
+```
+max_tokens = 500
+Chunk A: 501 tokens  → flagged as FAIL (just 1 token over)
+Chunk B: 2000 tokens → flagged as FAIL (400 tokens over)
+
+Both chunks count equally as 1 violation each.
+SC drops by 1/N for each, regardless of magnitude.
+```
+
+This binary behavior is intentional: it measures how *reliably* your chunker respects hard limits. A chunk exceeding the context window by 1 token breaks the system just as surely as one exceeding by 1000 tokens. From the system's perspective, both are failures.
+
+---
+
+#### Worked Example
+
+Document chunked with **40-word minimum, 150-word maximum** (roughly 30–220 tokens):
+
+```
+Chunk 1: "Machine learning models learn patterns from data..."
+         45 words, 68 tokens     ✓ compliant
+
+Chunk 2: "Deep neural networks use multiple layers..."
+         28 words, 42 tokens     ✗ non-compliant (below 40 words)
+
+Chunk 3: "Gradient descent optimizes model weights by computing partial derivatives
+         with respect to each weight parameter, moving in the direction of steepest
+         descent to minimize loss. Learning rates control step size; too high causes
+         divergence, too low causes slow convergence. Momentum variants like Adam
+         and RMSprop improve optimization by adapting step sizes per parameter."
+         89 words, 198 tokens     ✗ non-compliant (exceeds 150 words)
+
+Chunk 4: "Regularization techniques prevent overfitting by penalizing model complexity.
+         Common methods include L2 penalty, dropout, and early stopping."
+         23 words, 38 tokens      ✗ non-compliant (below 40 words)
+
+Chunk 5: "Convolutional neural networks excel at image processing tasks because
+         their local weight sharing and hierarchical feature extraction
+         naturally align with visual structure."
+         28 words, 39 tokens      ✗ non-compliant (below 40 words)
+```
+
+| Chunk | Words | Tokens | Status | Reason |
+|---|---|---|---|---|
+| c₁ | 45 | 68 | ✓ | Within range |
+| c₂ | 28 | 42 | ✗ | Too small |
+| c₃ | 89 | 198 | ✗ | Too large |
+| c₄ | 23 | 38 | ✗ | Too small |
+| c₅ | 28 | 39 | ✗ | Too small |
+
+SC = 1 − (4 non-compliant / 5 total) = 1 − 0.8 = **0.2**
+
+Only 20% of chunks meet size requirements. This chunker is unreliable for production use. The strategy (likely fixed-size splitting without respect for semantic boundaries) creates fragments too small to be meaningful and occasionally oversized blocks.
+
+**Contrast: Semantic chunking on same document:**
+
+A semantic chunker that respects topic boundaries produces:
+
+```
+Chunk A: "Machine learning models learn patterns from data. Deep neural networks
+         use multiple layers to capture abstract features. Gradient descent
+         optimizes weights by computing derivatives and moving toward lower loss."
+         51 words, 89 tokens ✓
+
+Chunk B: "Regularization prevents overfitting through L2 penalty, dropout, and early
+         stopping. Convolutional networks excel at images because local weight
+         sharing matches visual hierarchies."
+         29 words, 44 tokens ✗ (below 40 words, but only slightly)
+
+Chunk C: "Learning rates control optimization step size. Too high causes divergence;
+         too low causes slow convergence. Adaptive methods like Adam and RMSprop
+         adjust step sizes per parameter."
+         31 words, 50 tokens ✓
+```
+
+SC = 1 − (1 non-compliant / 3 total) = **0.667** — much better, though chunk B still undershoots slightly.
+
+---
+
+#### References
+
+- **Adaptive Chunking (SC definition & algorithm):** de Moura Júnior, Lelong & Blangero (2026) — *Adaptive Chunking: Optimizing Chunking-Method Selection for RAG* — LREC 2026 — [arXiv:2603.25333](https://arxiv.org/abs/2603.25333)
+
+---
+
+### 6. All Five Metrics Together
+
+The five intrinsic metrics (RC, BI, ICC, DCC, SC) form a complete evaluation suite. Together they answer:
+
+| Metric | Answers |
+|---|---|
+| **RC** | Are cross-references (citations, pronouns, footnotes) kept intact? |
+| **BI** | Are structural blocks (paragraphs, tables, lists) kept intact? |
+| **ICC** | Is each chunk semantically focused on a single topic? |
+| **DCC** | Do adjacent chunks maintain narrative and thematic continuity? |
+| **SC** | Do all chunks fit within token size constraints? |
+
+A chunker scoring high on all five produces chunks that are **reference-complete, structurally sound, semantically coherent, contextually connected, and operationally reliable**.
 
 ---
 
