@@ -14,7 +14,7 @@ Most RAG pipelines judge chunking only by downstream end-to-end metrics (answer 
 - **Cheap to compute** — text analysis + pre-computed embeddings; no generation calls
 - **Diagnostic** — tell you *why* a chunking strategy fails, not just that it underperforms
 
-The metrics below come from the Adaptive Chunking framework (de Moura Júnior et al., 2026), which introduced five complementary intrinsic metrics. This page documents them one by one, starting with References Completeness (RC) and Block Integrity (BI).
+The metrics below come from the Adaptive Chunking framework (de Moura Júnior et al., 2026), which introduced five complementary intrinsic metrics. This page documents them one by one: References Completeness (RC), Block Integrity (BI), and Intrachunk Cohesion (ICC).
 
 ---
 
@@ -317,11 +317,158 @@ BI = 3 intact / 3 total = **1.0** — every block survives. Headers and data row
 
 ---
 
-### 3. Upcoming
+### 3. Intrachunk Cohesion (ICC)
+
+#### Definition
+
+**Intrachunk Cohesion (ICC)** measures how semantically similar sentences are within the same chunk. It detects topic dilution — the unwanted mixing of unrelated topics in a single chunk that confuses vector embeddings during retrieval.
+
+A chunk has high ICC when its sentences cluster tightly around a single topic. ICC is calculated by averaging the cosine similarity between each sentence's embedding and the parent chunk's embedding. An ICC near 1.0 indicates perfect thematic focus; an ICC near 0.0 indicates the chunk blends multiple disconnected topics.
+
+---
+
+#### Why It Matters
+
+Vector retrievers rank chunks by embedding similarity to the query. If a chunk contains sentence A about "solar panels" and sentence B about "database indexes," the chunk's aggregate embedding is a blend of both. A query about solar energy retrieves the chunk for its solar content — but the LLM also receives sentence B, wasting token context and introducing noise that may lead to tangential or incorrect answers.
+
+**Example — mixed topics:**
+
+> Chunk: "Solar panels convert sunlight into electricity at 15–22% efficiency. Database indexes speed retrieval by sorting keys. Both technologies are improving rapidly."
+
+A query "How efficient are solar panels?" retrieves this chunk. The LLM sees high-quality solar content mixed with unrelated database trivia. The retriever chose the chunk because of the solar sentence, not the database sentence — but the LLM processes both, wasting context.
+
+**Example — tight focus:**
+
+> Chunk: "Solar panels convert sunlight into electricity at 15–22% efficiency. Monocrystalline panels reach 22–23% efficiency. Efficiency improves with temperature control and reduced defects."
+
+Same query retrieves this chunk. Every sentence is about solar efficiency. No noise, no wasted tokens.
+
+---
+
+#### The 4-Step Measurement Process
+
+**Step 1 — Sentence Segmentation**
+
+The chunk text is split into individual sentences using a sentence tokenizer. Sentence boundaries are marked (usually at `.`, `?`, `!` followed by whitespace).
+
+```
+Chunk: "A uses method X. B uses method Y. C uses method X."
+
+Sentences:
+  s₁ = "A uses method X."
+  s₂ = "B uses method Y."
+  s₃ = "C uses method X."
+```
+
+**Step 2 — Embedding Generation**
+
+An embedding model (e.g., `sentence-transformers/all-mpnet-base-v2`) generates a vector for each sentence and one vector for the entire chunk (concatenated or averaged from its sentences, depending on implementation).
+
+```
+Embeddings (512-dimensional):
+  e(s₁) = [0.21, -0.14, ..., 0.08]
+  e(s₂) = [0.31,  0.02, ..., -0.05]
+  e(s₃) = [0.22, -0.13, ..., 0.07]
+  e(chunk) = [0.25, -0.08, ..., 0.03]  (mean or full-text embedding)
+```
+
+**Step 3 — Cosine Similarity Evaluation**
+
+For each sentence, calculate the cosine similarity between the sentence's embedding and the chunk's embedding. Cosine similarity ranges from −1 to +1; typically 0 to 1 in practice (both vectors point in similar directions).
+
+```
+Formula:  sim(sᵢ, chunk) = cos(e(sᵢ), e(chunk)) = (e(sᵢ) · e(chunk)) / (||e(sᵢ)|| × ||e(chunk)||)
+
+Results:
+  sim(s₁, chunk) = 0.89
+  sim(s₂, chunk) = 0.44
+  sim(s₃, chunk) = 0.87
+```
+
+**Step 4 — Mean Aggregation**
+
+ICC is the arithmetic mean of all sentence-to-chunk similarities. Higher values indicate tighter semantic focus.
+
+```
+ICC = (1/N) × Σᵢ₌₁ᴺ sim(sᵢ, chunk)
+```
+
+---
+
+#### Algorithm
+
+```
+Input:  Set of chunks C = {c₁, c₂, ..., cₖ}
+        Embedding model E (sentence encoder)
+
+1. For each chunk cⱼ:
+
+     2. Segment chunk into sentences S = {s₁, s₂, ..., sₙ}
+     
+     3. Embed all sentences and the chunk:
+          ∀ sᵢ ∈ S:  eᵢ = E(sᵢ)    (sentence embedding)
+          e_chunk = E(cⱼ)            (chunk embedding)
+     
+     4. Compute cosine similarities:
+          ∀ sᵢ ∈ S:  simᵢ = cos(eᵢ, e_chunk)
+     
+     5. Calculate ICC for this chunk:
+          ICC(cⱼ) = (1/n) × Σᵢ₌₁ⁿ simᵢ
+
+6. Optional: Return per-chunk ICC scores, or aggregate across all chunks
+```
+
+An ICC of 1.0 means every sentence is perfectly aligned with the chunk's main topic. An ICC of 0.5 means half the semantic content of each sentence is noise relative to the chunk's topic.
+
+---
+
+#### Worked Example
+
+Chunk: *"Solar panels convert sunlight into electricity at 15–22% efficiency. They dominate renewable energy. Database indexes speed retrieval by sorting keys."*
+
+Sentences:
+- s₁ = "Solar panels convert sunlight into electricity at 15–22% efficiency."
+- s₂ = "They dominate renewable energy."
+- s₃ = "Database indexes speed retrieval by sorting keys."
+
+Embeddings (simplified; real embeddings are 384–768 dimensions):
+
+| Sentence | Embedding focus | sim(sᵢ, chunk) |
+|---|---|---|
+| s₁ (solar efficiency) | [0.85, 0.12, 0.03] | 0.88 |
+| s₂ (renewable energy) | [0.82, 0.18, 0.00] | 0.91 |
+| s₃ (database indexes) | [−0.10, 0.05, 0.95] | 0.18 |
+| chunk (blended) | [0.52, 0.12, 0.36] | — |
+
+ICC = (0.88 + 0.91 + 0.18) / 3 = **0.66**
+
+The chunk mixes topics: two sentences about solar/renewable energy score high (0.88, 0.91), but the database sentence (0.18) drags the average down. ICC = 0.66 signals topic dilution. A splitter should separate s₃ into its own chunk.
+
+**If the chunk were split:**
+
+Chunk A: *"Solar panels convert sunlight into electricity at 15–22% efficiency. They dominate renewable energy."*
+- s₁ sim = 0.89, s₂ sim = 0.92
+- ICC(A) = 0.905
+
+Chunk B: *"Database indexes speed retrieval by sorting keys."*
+- s₁ sim = 1.00 (single sentence = perfect alignment with itself)
+- ICC(B) = 1.0
+
+Both chunks now have ICC > 0.90, eliminating topic noise.
+
+---
+
+#### References
+
+- **Adaptive Chunking (ICC definition & algorithm):** de Moura Júnior, Lelong & Blangero (2026) — *Adaptive Chunking: Optimizing Chunking-Method Selection for RAG* — LREC 2026 — [arXiv:2603.25333](https://arxiv.org/abs/2603.25333)
+- **Sentence Transformer:** Reimers & Gurevych (2019) — *Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks* — [arxiv.org/abs/1908.10084](https://arxiv.org/abs/1908.10084)
+
+---
+
+### 4. Upcoming
 
 More intrinsic evaluation techniques will be documented here as they are added to the repository:
 
-- **Intrachunk Cohesion (ICC)** — How semantically similar are sentences within the same chunk?
 - **Document Contextual Coherence (DCC)** — How well do adjacent chunks relate to each other?
 - **Size Compliance (SC)** — Do chunks fall within the target token range?
 
