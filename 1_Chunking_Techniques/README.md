@@ -14,7 +14,7 @@ Most RAG pipelines judge chunking only by downstream end-to-end metrics (answer 
 - **Cheap to compute** — text analysis + pre-computed embeddings; no generation calls
 - **Diagnostic** — tell you *why* a chunking strategy fails, not just that it underperforms
 
-The metrics below come from the Adaptive Chunking framework (de Moura Júnior et al., 2026), which introduced five complementary intrinsic metrics. This page documents them one by one: References Completeness (RC), Block Integrity (BI), and Intrachunk Cohesion (ICC).
+The metrics below come from the Adaptive Chunking framework (de Moura Júnior et al., 2026), which introduced five complementary intrinsic metrics. This page documents them one by one: References Completeness (RC), Block Integrity (BI), Intrachunk Cohesion (ICC), and Document Contextual Coherence (DCC).
 
 ---
 
@@ -465,11 +465,189 @@ Both chunks now have ICC > 0.90, eliminating topic noise.
 
 ---
 
-### 4. Upcoming
+### 4. Document Contextual Coherence (DCC)
+
+#### Definition
+
+**Document Contextual Coherence (DCC)** measures the semantic flow between adjacent chunks. It detects whether chunking introduces artificial narrative breaks or isolates information from its surrounding context.
+
+Unlike ICC (which measures focus within a single chunk) or BI (which preserves structure), DCC ensures that chunk boundaries do not sever logical connections between consecutive segments. A high DCC score means adjacent chunks maintain thematic continuity; a low DCC score signals that the chunking strategy has inserted jarring transitions where the text naturally flows.
+
+---
+
+#### Why It Matters
+
+Retrieval systems often return chunks in sequence — first the retrieved chunk, then its neighbors for context. If chunks are semantically disconnected, the LLM sees a fragmented narrative. Even if each chunk is internally coherent (high ICC) and structurally intact (high BI), poor DCC forces the LLM to reason across conceptual gaps that should not exist.
+
+**Example — broken continuity:**
+
+> Chunk 1: "Machine learning relies on large datasets. Models learn patterns from examples. **[CHUNK BOUNDARY]**"
+> Chunk 2: "The number of training samples is critical. Larger datasets lead to better generalization. Batch size and learning rate interact in complex ways."
+
+A retriever returns chunk 1 in response to "What is machine learning?" The LLM sees a complete thought about ML. But if the user's follow-up is "How do datasets affect the model?", the retriever may return chunk 2 — which talks about datasets but in the narrow context of batch size and learning rate, not dataset size. The two chunks are about similar topics but express different aspects, creating cognitive jarring.
+
+**Example — maintained continuity:**
+
+> Chunk 1: "Machine learning relies on large datasets. Models learn patterns from examples. Larger datasets enable models to capture richer patterns and generalize better."
+> Chunk 2: "Generalization improves with dataset size because more examples reduce overfitting. However, data quality matters as much as quantity. Noisy data can harm learning even if the dataset is large."
+
+Both chunks discuss dataset impact and generalization. The boundary preserves narrative flow — chunk 2 directly continues the thought from chunk 1.
+
+---
+
+#### The 5-Step Measurement Process
+
+**Step 1 — Isolate the Target Chunk**
+
+Select a chunk cᵢ from the document's chunk sequence. This chunk will be evaluated for coherence with its neighbors.
+
+```
+Document: [c₁, c₂, c₃, c₄]
+Target: c₂
+```
+
+**Step 2 — Construct the Context Window**
+
+Define the immediate chronological neighbors of the target chunk. The context window W(cᵢ) consists of the chunk before (cᵢ₋₁) and the chunk after (cᵢ₊₁), concatenated together.
+
+```
+W(c₂) = c₁ + c₃  (joined as text)
+
+Example:
+  c₁ text: "Machine learning uses algorithms..."
+  c₃ text: "Deep learning scales to millions of parameters..."
+  W(c₂) = "Machine learning uses algorithms... Deep learning scales to millions of parameters..."
+```
+
+Edge chunks (first and last) use only their single neighbor:
+```
+W(c₁) = c₂
+W(cₙ) = cₙ₋₁
+```
+
+**Step 3 — Generate Embeddings**
+
+Pass both the target chunk and the joined neighbor window through an embedding model. Each produces a dense vector representation.
+
+```
+v_{c_i} = E(c_i)      (embedding of target chunk)
+v_{W(c_i)} = E(W(c_i))  (embedding of context window)
+
+Both vectors have the same dimensionality (e.g., 384 or 768 dims for sentence-transformers).
+```
+
+**Step 4 — Calculate Alignment**
+
+Compute the cosine similarity between the target chunk's embedding and the context window's embedding. This measures how well the target chunk "fits" semantically into its neighborhood.
+
+```
+Formula:  DCC(c_i) = cos(v_{c_i}, v_{W(c_i)})
+        = (v_{c_i} · v_{W(c_i)}) / (||v_{c_i}|| × ||v_{W(c_i)}||)
+
+Result ranges from −1 to +1; typically 0 to 1.
+```
+
+**Step 5 — Macro Averaging**
+
+Compute the DCC score for all chunks in the document, then average them to get a document-level coherence metric.
+
+```
+DCC_document = (1/N) × Σᵢ₌₁ᴺ DCC(cᵢ)
+```
+
+A DCC near 1.0 represents seamless narrative flow. A DCC near 0.5 signals disjointed chunk boundaries.
+
+---
+
+#### Algorithm
+
+```
+Input:  Set of chunks C = {c₁, c₂, ..., cₙ}
+        Embedding model E (sentence encoder)
+
+1. For each chunk cᵢ ∈ C:
+
+     2. Construct context window W(cᵢ):
+          if i == 1:        W(cᵢ) = c_{i+1}
+          if i == n:        W(cᵢ) = c_{i-1}
+          else:             W(cᵢ) = c_{i-1} + c_{i+1}   (concatenate as text)
+     
+     3. Generate embeddings:
+          v_i = E(cᵢ)
+          v_w = E(W(cᵢ))
+     
+     4. Compute cosine similarity:
+          DCC(cᵢ) = cos(v_i, v_w)
+
+5. Aggregate across all chunks:
+     DCC_document = (1/N) × Σᵢ₌₁ᴺ DCC(cᵢ)
+
+6. Return DCC_document (and optionally per-chunk scores)
+```
+
+---
+
+#### Worked Example
+
+Document with 4 chunks about machine learning and optimization:
+
+```
+c₁: "Machine learning trains models on data. The quality of data determines model performance."
+    [48 characters]
+
+c₂: "Optimization algorithms adjust model weights. Gradient descent is the most widely used method."
+    [96 characters]
+
+c₃: "Learning rate controls step size. Too high a rate causes divergence; too low causes slow learning."
+    [101 characters]
+
+c₄: "Regularization prevents overfitting. Dropout and L2 penalty are standard techniques."
+    [83 characters]
+```
+
+Embeddings (simplified vectors; real embeddings are 384–768 dimensions):
+
+| Chunk | Focus | Context window | Focus | sim(c_i, W) |
+|---|---|---|---|---|
+| c₁ | data quality | W(c₁) = c₂ + c₃ (optimization + learning rate) | how to optimize | 0.52 |
+| c₂ | optimization methods | W(c₂) = c₁ + c₃ (data + learning rate) | training + tuning | 0.78 |
+| c₃ | learning rate tuning | W(c₃) = c₂ + c₄ (optimization + regularization) | algorithm + regularization | 0.81 |
+| c₄ | regularization | W(c₄) = c₃ (learning rate tuning) | optimization tuning | 0.64 |
+
+DCC_document = (0.52 + 0.78 + 0.81 + 0.64) / 4 = **0.6875**
+
+**Interpretation:**
+
+- c₂ (0.78) and c₃ (0.81) score high: optimization → learning rate is a natural progression.
+- c₁ (0.52) scores low: data quality is tangential to optimization algorithms.
+- c₄ (0.64) scores moderately: regularization connects to learning rate tuning but less strongly.
+
+Overall DCC = 0.69 signals reasonable coherence but with one weak transition. Chunks could be reordered (c₁ after c₄) or split differently to improve flow.
+
+**If chunks were reordered to (c₁, c₂, c₃, c₄) → (c₂, c₃, c₄, c₁):**
+
+| Chunk order | New context | sim |
+|---|---|---|
+| c₂ (new 1st) | W = c₃ only | 0.81 |
+| c₃ (new 2nd) | W = c₂ + c₄ | 0.85 |
+| c₄ (new 3rd) | W = c₃ + c₁ | 0.73 |
+| c₁ (new 4th) | W = c₄ only | 0.68 |
+
+Reordered DCC = (0.81 + 0.85 + 0.73 + 0.68) / 4 = **0.77** — improved coherence by placing c₁ last instead of first.
+
+---
+
+#### References
+
+- **Adaptive Chunking (DCC definition & algorithm):** de Moura Júnior, Lelong & Blangero (2026) — *Adaptive Chunking: Optimizing Chunking-Method Selection for RAG* — LREC 2026 — [arXiv:2603.25333](https://arxiv.org/abs/2603.25333)
+- **Sentence Transformer:** Reimers & Gurevych (2019) — *Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks* — [arxiv.org/abs/1908.10084](https://arxiv.org/abs/1908.10084)
+
+---
+
+### 5. Upcoming
 
 More intrinsic evaluation techniques will be documented here as they are added to the repository:
 
-- **Document Contextual Coherence (DCC)** — How well do adjacent chunks relate to each other?
 - **Size Compliance (SC)** — Do chunks fall within the target token range?
 
 ---
